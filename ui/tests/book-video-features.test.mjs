@@ -84,6 +84,40 @@ test('book toolbar is compact and narration exposes real progress', () => {
   assert.match(source, /Прошло/)
 })
 
+test('book chapters support chapter zero, drag reorder, and race-safe text synchronization', () => {
+  assert.match(source, /createBookZeroChapter/)
+  assert.match(source, /chapterDisplayNumber/)
+  assert.match(source, /startBookChapterDrag/)
+  assert.match(source, /dropBookChapter/)
+  assert.match(source, /persistBookChapterOrder/)
+  assert.match(source, /bookEditRevision/)
+  assert.match(source, /bookSavePromise/)
+  assert.match(source, /syncSavedBookChapterToVideo/)
+  assert.match(source, /sourceContentHash/)
+  assert.match(source, /invalidAudioIds/)
+  assert.match(source, /material\.role === 'book-master'/)
+  assert.match(source, /installBookRecord\(record, \{ preserveDraft: !draftSaved \}\)/)
+  assert.match(source, /bookVideoTextSyncState\.value === 'error'/)
+  assert.match(source, /chapterTimelineWords\(currentChapter\.value\)/)
+})
+
+test('video supports background-only mode, sharp backdrops, layer resizing, and twelve visualizer palettes', () => {
+  assert.match(source, /coverMode:\s*'cover'/)
+  assert.match(source, /backgroundBlur:\s*true/)
+  assert.match(source, /setCoverEnabled/)
+  assert.match(source, /background-unblurred/)
+  assert.match(source, /onLayerResizePointerDown/)
+  assert.match(source, /resize-e/)
+  assert.match(source, /resize-s/)
+  assert.match(source, /resize-se/)
+  const presets = source.slice(
+    source.indexOf('const VISUALIZER_COLOR_PRESETS'),
+    source.indexOf('const DEFAULT_LAYERS'),
+  )
+  assert.equal((presets.match(/\{ id:/g) || []).length, 12)
+  assert.match(source, /setVisualizerColorPreset/)
+})
+
 test('timeline playhead supports pointer scrubbing and keyboard seeking', () => {
   assert.match(source, /ref="timelineContent"/)
   assert.match(source, /@pointerdown\.stop="startTimelineScrub"/)
@@ -92,6 +126,31 @@ test('timeline playhead supports pointer scrubbing and keyboard seeking', () => 
   assert.match(source, /function onTimelinePlayheadKeydown/)
   assert.match(source, /event\.key === 'ArrowLeft'/)
   assert.match(source, /event\.key === 'ArrowRight'/)
+})
+
+test('timeline music items support Reaper-style dragging, trimming, splitting, and navigation', () => {
+  assert.match(source, /musicClips/)
+  assert.match(source, /application\/x-suviren-audio-asset-id/)
+  assert.match(source, /dropMusicOnTimeline/)
+  assert.match(source, /startMusicClipPointer/)
+  assert.match(source, /trim-start/)
+  assert.match(source, /splitSelectedMusicClip/)
+  assert.match(source, /event\.key\.toLowerCase\(\) === 's'/)
+  assert.match(source, /onTimelineWheel/)
+  assert.match(source, /startTimelinePan/)
+  assert.match(source, /startTimelineResize/)
+})
+
+test('timeline magnet snaps book elements to chapters, clips, and the adaptive grid', () => {
+  assert.match(source, /class="magnet-toggle"/)
+  assert.match(source, /function toggleTimelineSnap/)
+  assert.match(source, /function timelineSnapCandidates/)
+  assert.match(source, /timelineGridStep/)
+  assert.match(source, /class="timeline-snap-guide"/)
+  assert.match(source, /chapterBound/)
+  assert.match(source, /syncChapterBoundMusicClips/)
+  assert.match(source, /startChapterBoundaryPointer/)
+  assert.match(source, /startSceneClipPointer/)
 })
 
 test('text navigator maps words to the timeline and plays selected excerpts', () => {

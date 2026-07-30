@@ -180,6 +180,8 @@ class TtsServiceTests(unittest.TestCase):
             self.project["uuid"], include_details=True
         )
         self.assertTrue(all(item["is_stale"] for item in changed["audio_assets"]))
+        with self.assertRaisesRegex(ValueError, "нет готовых озвучек"):
+            self.service.build_video_master(self.project["uuid"])
 
     def test_video_master_uses_active_chapter_audio_in_book_order(self) -> None:
         second = self.repository.create_chapter(

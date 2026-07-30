@@ -104,6 +104,32 @@ class ProjectApiTests(unittest.TestCase):
         self.assertIn("--music", command)
         self.assertEqual(command[command.index("--music") + 1], "music.flac")
 
+    def test_background_only_render_does_not_require_cover(self) -> None:
+        inputs = {
+            "audio": Path("voice.mp3"),
+            "music": None,
+            "cover": None,
+            "background": Path("backdrop.png"),
+            "chapters": server.CHAPTERS_PATH,
+        }
+        with (
+            patch.object(server, "BUILD_DIR", self.user_data / "render"),
+            patch.object(server, "get_export_inputs", return_value=inputs),
+            patch.object(
+                server,
+                "load_editor_project",
+                return_value={
+                    "theme": "amber",
+                    "coverMode": "background-only",
+                    "backgroundBlur": False,
+                },
+            ),
+        ):
+            command = server.build_render_cmd(test_mode=False)
+        self.assertNotIn("--cover", command)
+        self.assertIn("--background", command)
+        self.assertEqual(command[command.index("--background") + 1], "backdrop.png")
+
 
 if __name__ == "__main__":
     unittest.main()

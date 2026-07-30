@@ -1157,6 +1157,22 @@ STYLE_PRESETS: dict[str, dict[str, Any]] = {
 
 # ── Panel drawing ────────────────────────────────────────────────
 
+VISUALIZER_COLOR_PRESETS: dict[str, tuple[str, str, str, str]] = {
+    "spectrum": ("#ffad27", "#d74fe8", "#55ddcf", "#b750da"),
+    "amber": ("#ffcf5a", "#ff9d24", "#eb5b2a", "#ffcf5a"),
+    "violet": ("#d9a7ff", "#a968f0", "#6533b8", "#c279ff"),
+    "ocean": ("#7ce7ff", "#26a7df", "#2458c6", "#55ddcf"),
+    "mint": ("#c3ffe6", "#55ddcf", "#2ca77e", "#88f0bf"),
+    "fire": ("#fff071", "#ff9a2e", "#f04444", "#ffcf5a"),
+    "rose": ("#ffd0e4", "#fa73aa", "#b93478", "#ff8ec1"),
+    "ice": ("#effcff", "#a9e7ff", "#72a8ff", "#c7f4ff"),
+    "acid": ("#efff62", "#92f542", "#2bcf75", "#d8ff48"),
+    "mono": ("#ffffff", "#c8c8cf", "#777780", "#eeeeef"),
+    "copper": ("#ffd0a1", "#c8783a", "#7e3f25", "#e7a268"),
+    "night": ("#9aa8ff", "#5c67d9", "#303478", "#7d65d8"),
+}
+
+
 def rgb_or_default(color: Optional[str], default: tuple[int, int, int] = (20, 20, 30)) -> tuple[int, ...]:
     if not color:
         return default
@@ -1169,6 +1185,18 @@ def rgb_or_default(color: Optional[str], default: tuple[int, int, int] = (20, 20
     except Exception:
         pass
     return default
+
+
+def visualizer_preset_colors(
+    config: dict[str, Any],
+    fallback: tuple[int, int, int],
+) -> tuple[tuple[int, ...], ...]:
+    preset_id = str(config.get("colorPreset") or "spectrum")
+    values = VISUALIZER_COLOR_PRESETS.get(
+        preset_id,
+        VISUALIZER_COLOR_PRESETS["spectrum"],
+    )
+    return tuple(rgb_or_default(value, fallback) for value in values)
 
 
 def truncate_text(text: str, max_len: int = 40) -> str:
@@ -1365,6 +1393,7 @@ def _prepare_panel_background(
     bg_color: tuple[int, int, int],
     *,
     glitch: bool = True,
+    blur: bool = True,
 ) -> Any:
     """Aspect-fill and softly grade the photographic panel background."""
     from PIL import Image, ImageEnhance, ImageFilter, ImageOps
@@ -1383,7 +1412,8 @@ def _prepare_panel_background(
                 centering=(0.5, 0.5),
             )
         scale = max(0.5, min(width / 1920, height / 1080))
-        fitted = fitted.filter(ImageFilter.GaussianBlur(radius=1.8 * scale))
+        if blur:
+            fitted = fitted.filter(ImageFilter.GaussianBlur(radius=1.8 * scale))
         fitted = ImageEnhance.Color(fitted).enhance(0.76)
         fitted = ImageEnhance.Brightness(fitted).enhance(0.57)
         if glitch:
@@ -1477,7 +1507,7 @@ def draw_panel(
     out: Path,
     chapters: list[Chapter],
     current_index: int,
-    cover: Path,
+    cover: Optional[Path],
     background: Optional[Path] = None,
     font: Optional[Path] = None,
     width: int = DEFAULT_WIDTH,
@@ -1516,6 +1546,8 @@ def draw_panel(
     cover_visible = cover_config.get("visible", True) is not False
     title_visible = title_config.get("visible", True) is not False
     visualizer_visible = visualizer_config.get("visible", True) is not False
+    visualizer_colors = visualizer_preset_colors(visualizer_config, tuple(palette["accent"]))
+    visualizer_primary = visualizer_colors[0]
 
     text_color = rgb_or_default(title_config.get("color"), palette["text"])
     text_dim = palette["text_dim"]
@@ -1529,6 +1561,7 @@ def draw_panel(
         (W, H),
         bg_color,
         glitch=project_data.get("glitch", True) is not False,
+        blur=project_data.get("backgroundBlur", True) is not False,
     )
     scale = max(0.5, min(W / 1920, H / 1080))
 
@@ -1538,7 +1571,7 @@ def draw_panel(
     cover_w = max(32, layer_pixel(cover_config, "w", 27.0, W))
     cover_h = max(32, layer_pixel(cover_config, "h", 66.0, H))
 
-    if cover_visible and cover.exists():
+    if cover_visible and cover and cover.exists():
         try:
             with Image.open(cover) as opened:
                 cv = ImageOps.fit(
@@ -1699,7 +1732,7 @@ def draw_panel(
             )
         draw.line(
             (wave_x, wave_mid, wave_x + wave_w, wave_mid),
-            fill=(*accent, 54),
+            fill=(*visualizer_primary, 54),
             width=max(1, round(scale)),
         )
 
@@ -1715,7 +1748,12 @@ def draw_panel(
             by = wave_y + round(wave_h * (0.82 - amplitude * 0.64))
             points.append((bx, by))
         if len(points) > 1:
-            draw.line(points, fill=(*accent, 236), width=max(2, round(2 * scale)), joint="curve")
+            draw.line(
+                points,
+                fill=(*visualizer_primary, 236),
+                width=max(2, round(2 * scale)),
+                joint="curve",
+            )
 
     # The scene progress rail is intentionally thin, like the Vue preview.
     # Only the neutral rail and total time are baked into panels. The moving
@@ -1787,7 +1825,7 @@ def draw_panel(
 
 def render_panels(
     chapters: list[Chapter],
-    cover: Path,
+    cover: Optional[Path],
     background: Optional[Path],
     font: Optional[Path],
     out_dir: Path,
@@ -1917,9 +1955,11 @@ def _render_segment_worker(args: dict[str, Any]) -> dict[str, Any]:
     waveform_visible = animated_visuals and visualizer.get("visible", True) is not False
     palette = STYLE_PRESETS.get(style, STYLE_PRESETS["deep-purple"])
     accent = tuple(palette["accent"])
-    accent2 = tuple(palette["accent2"])
     accent_hex = "".join(f"{channel:02x}" for channel in accent)
-    accent2_hex = "".join(f"{channel:02x}" for channel in accent2)
+    visualizer_hex = [
+        "".join(f"{channel:02x}" for channel in color)
+        for color in visualizer_preset_colors(visualizer, accent)
+    ]
 
     filter_parts: list[str] = [f"[0:v]scale={width}:{height},setsar=1,format=rgba[base]"]
     current_label = "base"
@@ -1947,8 +1987,9 @@ def _render_segment_worker(args: dict[str, Any]) -> dict[str, Any]:
                 ),
                 (
                     f"gradients=s={wave_w}x{wave_h}:r={fps}:d={duration:.6f}:"
-                    f"c0=0x{accent_hex}:c1=0xb750da:c2=0x55ddcf:"
-                    f"c3=0x{accent2_hex}:n=4:x0=0:y0=0:x1={wave_w}:y1=0:"
+                    f"c0=0x{visualizer_hex[0]}:c1=0x{visualizer_hex[1]}:"
+                    f"c2=0x{visualizer_hex[2]}:c3=0x{visualizer_hex[3]}:"
+                    f"n=4:x0=0:y0=0:x1={wave_w}:y1=0:"
                     "speed=0.02,format=rgba[wave_gradient]"
                 ),
                 (
@@ -2285,6 +2326,52 @@ def build_music_mix_filter(config: dict[str, Any], duration: float) -> str:
     )
 
 
+def build_music_timeline_filter(
+    config: dict[str, Any],
+    clips: list[dict[str, Any]],
+    duration: float,
+) -> str:
+    """Build an FFmpeg graph for independently positioned music items."""
+    def bounded(source: dict[str, Any], key: str, default: float, minimum: float, maximum: float) -> float:
+        try:
+            value = float(source.get(key, default))
+        except (TypeError, ValueError):
+            value = default
+        return max(minimum, min(maximum, value))
+
+    track_volume = bounded(config, "volume", 0.16, 0.0, 1.0)
+    bass = bounded(config, "bass", 0.0, -12.0, 12.0)
+    mid = bounded(config, "mid", 0.0, -12.0, 12.0)
+    treble = bounded(config, "treble", 0.0, -12.0, 12.0)
+    filters = ["[1:a]aresample=48000,asetpts=PTS-STARTPTS[voice]"]
+    labels = ["[voice]"]
+    for index, clip in enumerate(clips):
+        clip_duration = max(0.05, float(clip["duration"]))
+        delay_ms = max(0, round(float(clip["timeline_start"]) * 1000))
+        clip_volume = bounded(clip, "volume", 1.0, 0.0, 2.0)
+        fade_duration = min(0.35, max(0.03, clip_duration / 4))
+        fade_out_start = max(0.0, clip_duration - fade_duration)
+        label = f"music{index}"
+        filters.append(
+            f"[{index + 2}:a]aresample=48000,asetpts=PTS-STARTPTS,"
+            f"atrim=duration={clip_duration:.6f},"
+            f"equalizer=f=120:t=q:w=1:g={bass:.2f},"
+            f"equalizer=f=1100:t=q:w=1:g={mid:.2f},"
+            f"equalizer=f=7000:t=q:w=1:g={treble:.2f},"
+            f"volume={track_volume * clip_volume:.4f},"
+            f"afade=t=in:st=0:d={fade_duration:.3f},"
+            f"afade=t=out:st={fade_out_start:.3f}:d={fade_duration:.3f},"
+            f"adelay={delay_ms}:all=1,apad=whole_dur={duration:.6f}[{label}]"
+        )
+        labels.append(f"[{label}]")
+    filters.append(
+        f"{''.join(labels)}amix=inputs={len(labels)}:duration=first:"
+        "dropout_transition=0:normalize=0,"
+        "alimiter=limit=0.95:attack=5:release=50[mixed]"
+    )
+    return ";".join(filters)
+
+
 def mux_master_audio(
     video: Path,
     audio: Path,
@@ -2292,6 +2379,7 @@ def mux_master_audio(
     *,
     music: Optional[Path] = None,
     music_config: Optional[dict[str, Any]] = None,
+    music_clips: Optional[list[dict[str, Any]]] = None,
     start: float = 0.0,
     duration: float,
     audio_bitrate: str = "192k",
@@ -2306,8 +2394,40 @@ def mux_master_audio(
         "-i", str(audio),
     ]
     config = dict(music_config or {})
-    music_enabled = music is not None and config.get("enabled", True) is not False
-    if music_enabled:
+    prepared_clips: list[dict[str, Any]] = []
+    if music_clips is not None and config.get("enabled", True) is not False:
+        render_end = start + duration
+        for clip in music_clips:
+            if clip.get("enabled", True) is False:
+                continue
+            clip_start = max(0.0, float(clip.get("start", 0.0)))
+            clip_end = max(clip_start, float(clip.get("end", clip_start)))
+            overlap_start = max(start, clip_start)
+            overlap_end = min(render_end, clip_end)
+            path = clip.get("path")
+            if overlap_end <= overlap_start + 0.001 or not isinstance(path, Path):
+                continue
+            prepared_clips.append({
+                **clip,
+                "timeline_start": overlap_start - start,
+                "duration": overlap_end - overlap_start,
+                "source_offset": max(0.0, float(clip.get("sourceOffset", 0.0)) + overlap_start - clip_start),
+            })
+
+    if prepared_clips:
+        for clip in prepared_clips:
+            if config.get("loop", True) is not False:
+                cmd += ["-stream_loop", "-1"]
+            cmd += [
+                "-ss", f"{float(clip['source_offset']):.6f}",
+                "-i", str(clip["path"]),
+            ]
+        cmd += [
+            "-filter_complex", build_music_timeline_filter(config, prepared_clips, duration),
+            "-map", "0:v:0",
+            "-map", "[mixed]",
+        ]
+    elif music_clips is None and music is not None and config.get("enabled", True) is not False:
         if config.get("loop", True) is not False:
             cmd += ["-stream_loop", "-1"]
         cmd += [
@@ -2513,7 +2633,7 @@ def cmd_preview(args: argparse.Namespace) -> None:
     editor_project = load_editor_project_config(getattr(args, "editor_project", None))
     paths = render_panels(
         chapters,
-        cover=Path(args.cover),
+        cover=Path(args.cover) if args.cover else None,
         background=Path(args.background) if args.background else None,
         font=Path(args.font) if args.font else None,
         out_dir=panels_dir,
@@ -2561,6 +2681,62 @@ def load_editor_project_config(path_value: Optional[str]) -> dict[str, Any]:
     return {}
 
 
+def load_editor_music_clips(
+    editor_project: dict[str, Any],
+    editor_path_value: Optional[str],
+) -> Optional[list[dict[str, Any]]]:
+    """Resolve saved timeline items to local audio files."""
+    raw_clips = editor_project.get("musicClips")
+    if not isinstance(raw_clips, list):
+        return None
+    materials = {
+        str(item.get("id")): item
+        for item in editor_project.get("materials", [])
+        if isinstance(item, dict) and item.get("id") is not None
+    }
+    editor_path = Path(editor_path_value).resolve() if editor_path_value else None
+    resolved: list[dict[str, Any]] = []
+    for raw in raw_clips:
+        if not isinstance(raw, dict) or raw.get("enabled", True) is False:
+            continue
+        material = materials.get(str(raw.get("assetId")))
+        server_path = material.get("serverPath") if material else None
+        if not server_path:
+            warn(f"Music clip {raw.get('id', '?')} has no uploaded material")
+            continue
+        candidate = Path(str(server_path))
+        candidates = [candidate]
+        if not candidate.is_absolute():
+            candidates.insert(0, Path.cwd() / candidate)
+            if editor_path:
+                candidates.extend([
+                    editor_path.parent / candidate,
+                    editor_path.parent.parent / candidate,
+                ])
+        path = next((item.resolve() for item in candidates if item.is_file()), None)
+        if path is None:
+            warn(f"Music clip file not found: {server_path}")
+            continue
+        try:
+            start = max(0.0, float(raw.get("start", 0.0)))
+            end = max(start, float(raw.get("end", start)))
+        except (TypeError, ValueError):
+            warn(f"Music clip {raw.get('id', '?')} has invalid bounds")
+            continue
+        if end <= start + 0.001:
+            continue
+        resolved.append({
+            "id": raw.get("id"),
+            "path": path,
+            "start": start,
+            "end": end,
+            "sourceOffset": max(0.0, safe_float(str(raw.get("sourceOffset", 0.0)))),
+            "volume": max(0.0, min(2.0, safe_float(str(raw.get("volume", 1.0))))),
+            "enabled": True,
+        })
+    return resolved
+
+
 def cmd_render(args: argparse.Namespace) -> None:
     check_binary("ffmpeg", required=True)
     check_binary("ffprobe", required=True)
@@ -2572,8 +2748,8 @@ def cmd_render(args: argparse.Namespace) -> None:
     music = Path(args.music) if getattr(args, "music", None) else None
     if music is not None and not music.exists():
         fail(f"Music not found: {music}")
-    cover = Path(args.cover)
-    if not cover.exists():
+    cover = Path(args.cover) if args.cover else None
+    if cover is not None and not cover.exists():
         fail(f"Cover not found: {cover}")
 
     if args.chapters:
@@ -2609,6 +2785,10 @@ def cmd_render(args: argparse.Namespace) -> None:
         editor_project.get("music")
         if isinstance(editor_project.get("music"), dict)
         else {}
+    )
+    music_clips = load_editor_music_clips(
+        editor_project,
+        getattr(args, "editor_project", None),
     )
     bitrate_preset_name = str(getattr(args, "bitrate_preset", DEFAULT_BITRATE_PRESET))
     bitrate_profile = RENDER_BITRATE_PRESETS[bitrate_preset_name]
@@ -2818,6 +2998,7 @@ def cmd_render(args: argparse.Namespace) -> None:
         Path(args.out),
         music=music,
         music_config=music_config,
+        music_clips=music_clips,
         start=float(segment_args_list[0]["start"]),
         duration=output_duration,
         audio_bitrate=bitrate_profile["audio_bitrate"],
@@ -2861,7 +3042,7 @@ def add_rpp_args(p: argparse.ArgumentParser) -> None:
 
 
 def add_visual_args(p: argparse.ArgumentParser) -> None:
-    p.add_argument("--cover", required=True, help="Square cover image")
+    p.add_argument("--cover", help="Optional square cover image")
     p.add_argument("--background", help="Optional 16:9 background image")
     p.add_argument("--font", help="Optional TTF font with Cyrillic")
     p.add_argument("--width", type=int, default=DEFAULT_WIDTH)

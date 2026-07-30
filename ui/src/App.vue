@@ -1,5 +1,6 @@
 <template>
-  <div class="studio" :class="[`theme-${project.theme}`, `workspace-${activeWorkspace}`, { 'is-loading': loading }]">
+  <div class="studio" :class="[`theme-${project.theme}`, `workspace-${activeWorkspace}`, { 'is-loading': loading }]"
+       :style="{ '--timeline-height': `${timelineHeight}px` }">
     <header class="topbar">
       <div class="brand" aria-label="Book Wunderwaffe Studio">
         <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
@@ -119,7 +120,9 @@
         <div v-if="project.materials.length" class="material-list">
           <button v-for="asset in project.materials" :key="asset.id" type="button"
                   class="material-row"
+                  :draggable="asset.type === 'audio'"
                   :class="{ active: selection.type === 'asset' && selection.id === asset.id }"
+                  @dragstart="startMaterialDrag(asset, $event)"
                   @click="select('asset', asset.id)">
             <span class="material-kind" :class="asset.type">{{ materialCode(asset.type) }}</span>
             <span class="material-copy">
@@ -165,7 +168,8 @@
           </div>
         </div>
 
-        <div ref="sceneEl" class="scene-frame" :class="{ 'glitch-enabled': project.glitch }"
+        <div ref="sceneEl" class="scene-frame"
+             :class="{ 'glitch-enabled': project.glitch, 'background-unblurred': !project.backgroundBlur }"
              @pointerdown.self="select('project')">
           <div class="scene-backdrop" :style="backgroundStyle"></div>
           <video v-if="videoSource" ref="videoEl" class="scene-video" :src="videoSource" playsinline
@@ -178,11 +182,14 @@
           <div class="scene-grid" aria-hidden="true"></div>
           <div v-if="project.glitch" class="glitch-scan" aria-hidden="true"></div>
 
-          <button v-if="layerVisible('cover')" type="button" class="composition-layer cover-layer"
+          <button v-if="coverEnabled" type="button" class="composition-layer cover-layer"
                   :class="{ selected: selection.type === 'layer' && selection.id === 'cover' }"
                   :style="layerStyle('cover')" @pointerdown.stop="onLayerPointerDown('cover', $event)">
             <img v-if="coverSource" :src="coverSource" alt="Обложка книги" />
             <span v-else class="cover-placeholder"><i>BW</i><b>ОБЛОЖКА</b><small>добавьте изображение</small></span>
+            <span class="layer-resize-handle resize-e" @pointerdown.stop.prevent="onLayerResizePointerDown('cover', 'e', $event)"></span>
+            <span class="layer-resize-handle resize-s" @pointerdown.stop.prevent="onLayerResizePointerDown('cover', 's', $event)"></span>
+            <span class="layer-resize-handle resize-se" @pointerdown.stop.prevent="onLayerResizePointerDown('cover', 'se', $event)"></span>
           </button>
 
           <button v-if="layerVisible('title')" ref="titleLayerEl" type="button" class="composition-layer title-layer"
@@ -197,6 +204,9 @@
                 <b>{{ nextChapter.title }}</b>
               </span>
             </span>
+            <span class="layer-resize-handle resize-e" @pointerdown.stop.prevent="onLayerResizePointerDown('title', 'e', $event)"></span>
+            <span class="layer-resize-handle resize-s" @pointerdown.stop.prevent="onLayerResizePointerDown('title', 's', $event)"></span>
+            <span class="layer-resize-handle resize-se" @pointerdown.stop.prevent="onLayerResizePointerDown('title', 'se', $event)"></span>
           </button>
 
           <button v-if="project.captions?.enabled && layerVisible('caption') && currentReadingCaption"
@@ -206,6 +216,9 @@
                   title="Перетащите текст в нужное место"
                   @pointerdown.stop="onLayerPointerDown('caption', $event)">
             {{ currentReadingCaption }}
+            <span class="layer-resize-handle resize-e" @pointerdown.stop.prevent="onLayerResizePointerDown('caption', 'e', $event)"></span>
+            <span class="layer-resize-handle resize-s" @pointerdown.stop.prevent="onLayerResizePointerDown('caption', 's', $event)"></span>
+            <span class="layer-resize-handle resize-se" @pointerdown.stop.prevent="onLayerResizePointerDown('caption', 'se', $event)"></span>
           </button>
 
           <div v-if="videoPreparing" class="video-prepare-overlay">
@@ -230,6 +243,9 @@
                   :class="{ selected: selection.type === 'layer' && selection.id === 'visualizer' }"
                   :style="layerStyle('visualizer')" @pointerdown.stop="onLayerPointerDown('visualizer', $event)">
             <canvas ref="visualizerCanvas" aria-label="Визуализация аудио"></canvas>
+            <span class="layer-resize-handle resize-e" @pointerdown.stop.prevent="onLayerResizePointerDown('visualizer', 'e', $event)"></span>
+            <span class="layer-resize-handle resize-s" @pointerdown.stop.prevent="onLayerResizePointerDown('visualizer', 's', $event)"></span>
+            <span class="layer-resize-handle resize-se" @pointerdown.stop.prevent="onLayerResizePointerDown('visualizer', 'se', $event)"></span>
           </button>
 
           <div class="scene-corner scene-corner-bottom">
@@ -302,6 +318,15 @@
                 <input v-model="project.layers.visualizer.visible" type="checkbox" /><i></i>
               </label>
               <label class="switch-row">
+                <span><b>Показывать обложку</b><small>Можно оставить только единый задник</small></span>
+                <input :checked="project.coverMode !== 'background-only'" type="checkbox"
+                       @change="setCoverEnabled($event.target.checked)" /><i></i>
+              </label>
+              <label class="switch-row">
+                <span><b>Размытие задника</b><small>Отключите для исходного резкого изображения</small></span>
+                <input v-model="project.backgroundBlur" type="checkbox" /><i></i>
+              </label>
+              <label class="switch-row">
                 <span><b>Текст озвучки</b><small>Показывать читаемый фрагмент на экране и в MP4</small></span>
                 <input v-model="project.captions.enabled" type="checkbox" /><i></i>
               </label>
@@ -319,7 +344,7 @@
             <div class="project-readiness">
               <span class="section-title">Готовность</span>
               <div><i :class="{ done: !!audioAsset }"></i><span>Аудио</span><b>{{ audioAsset ? 'готово' : 'нужно' }}</b></div>
-              <div><i :class="{ done: !!coverAsset }"></i><span>Обложка</span><b>{{ coverAsset ? 'готово' : 'нужно' }}</b></div>
+              <div><i :class="{ done: coverRequirementMet }"></i><span>{{ project.coverMode === 'background-only' ? 'Задник' : 'Обложка' }}</span><b>{{ coverRequirementMet ? 'готово' : 'нужно' }}</b></div>
               <div><i :class="{ done: project.chapters.length > 0 }"></i><span>Главы</span><b>{{ project.chapters.length || 'нужно' }}</b></div>
             </div>
           </template>
@@ -327,15 +352,37 @@
           <template v-else-if="selection.type === 'music'">
             <div class="music-mixer music-mixer-dedicated">
               <div class="mixer-heading">
-                <span class="section-title">Музыкальная дорожка</span>
+                <span class="section-title">{{ selectedMusicClip ? 'Музыкальный клип' : 'Музыкальная дорожка' }}</span>
                 <button type="button" @click="musicInput?.click()">＋ Добавить файл</button>
               </div>
               <label class="field-label">Файл музыки
-                <select v-model="project.musicAssetId" @change="onMusicSelectionChanged">
+                <select :value="selectedMusicClip?.assetId || project.musicAssetId"
+                        @change="changeSelectedMusicAsset($event.target.value || null)">
                   <option :value="null">Без музыки</option>
                   <option v-for="asset in musicCandidates" :key="asset.id" :value="asset.id">{{ asset.name }}</option>
                 </select>
               </label>
+              <div v-if="selectedMusicClip" class="music-clip-inspector">
+                <label class="field-label">Начало
+                  <input :value="formatTimecode(selectedMusicClip.start)" type="text"
+                         @change="updateMusicClipTime('start', $event.target.value)" />
+                </label>
+                <label class="field-label">Конец
+                  <input :value="formatTimecode(selectedMusicClip.end)" type="text"
+                         @change="updateMusicClipTime('end', $event.target.value)" />
+                </label>
+                <label class="field-label">Громкость клипа
+                  <input v-model.number="selectedMusicClip.volume" type="range" min="0" max="2" step="0.01" />
+                </label>
+                <label class="switch-row music-clip-enabled">
+                  <span><b>Клип включён</b><small>Можно временно выключить без удаления</small></span>
+                  <input v-model="selectedMusicClip.enabled" type="checkbox" @change="applyMusicMix" /><i></i>
+                </label>
+                <div class="music-clip-actions">
+                  <button type="button" @click="splitSelectedMusicClip">✂ Разрезать по курсору</button>
+                  <button type="button" class="danger" @click="removeMusicClip(selectedMusicClip.id)">Удалить клип</button>
+                </div>
+              </div>
               <template v-if="musicAsset">
                 <div class="music-volume-card">
                   <div>
@@ -465,6 +512,7 @@
               <label class="field-label">Ширина, %<input v-model.number="selectedLayer.w" type="number" min="5" max="100" step="0.5" /></label>
               <label class="field-label">Высота, %<input v-model.number="selectedLayer.h" type="number" min="5" max="100" step="0.5" /></label>
             </div>
+            <p class="layer-drag-hint">Перетаскивайте слой за середину, ширину — за правый край, высоту — за нижний. Угол меняет оба размера.</p>
             <template v-if="selection.id === 'title'">
               <label class="field-label">Размер текста
                 <input v-model.number="selectedLayer.fontSize" type="range" min="24" max="72" step="1" />
@@ -474,8 +522,18 @@
                 <span>{{ selectedLayer.color }}</span>
               </label>
             </template>
+            <template v-if="selection.id === 'visualizer'">
+              <span class="section-title">Цветовой пресет</span>
+              <div class="visualizer-preset-grid">
+                <button v-for="preset in VISUALIZER_COLOR_PRESETS" :key="preset.id" type="button"
+                        :class="{ active: selectedLayer.colorPreset === preset.id }"
+                        :title="preset.label" @click="setVisualizerColorPreset(preset.id)">
+                  <i :style="{ background: visualizerPresetGradient(preset) }"></i>
+                  <span>{{ preset.label }}</span>
+                </button>
+              </div>
+            </template>
             <template v-if="selection.id === 'caption'">
-              <p class="layer-drag-hint">Текст можно перетаскивать мышью прямо по кадру.</p>
               <label class="field-label">Размер текста
                 <input v-model.number="selectedLayer.fontSize" type="range" min="16" max="48" step="1" />
               </label>
@@ -508,9 +566,19 @@
         </label>
         <div class="chapter-book-list">
           <button v-for="chapter in filteredBookChapters" :key="chapter.id" type="button"
-                  :class="{ active: currentBookChapter?.id === chapter.id }"
+                  draggable="true"
+                  :class="{
+                    active: currentBookChapter?.id === chapter.id,
+                    dragging: draggedBookChapterId === chapter.id,
+                    'drop-before': bookChapterDropId === chapter.id && bookChapterDropSide === 'before',
+                    'drop-after': bookChapterDropId === chapter.id && bookChapterDropSide === 'after',
+                  }"
+                  @dragstart="startBookChapterDrag(chapter, $event)"
+                  @dragover.prevent="onBookChapterDragOver(chapter, $event)"
+                  @drop.prevent="dropBookChapter(chapter)"
+                  @dragend="finishBookChapterDrag"
                   @click="selectBookChapter(chapter.id)">
-            <span>{{ chapter.position + 1 }}</span>
+            <span class="chapter-order-handle" title="Перетащить главу"><i>⠿</i>{{ chapterDisplayNumber(chapter) }}</span>
             <b>{{ chapter.title }}</b>
             <small>{{ chapter.content.length.toLocaleString('ru-RU') }} зн.</small>
             <i class="chapter-audio-state"
@@ -519,7 +587,9 @@
           </button>
         </div>
         <div class="chapter-list-actions">
-          <button type="button" @click="createBookChapter">＋ Глава</button>
+          <button class="chapter-add" type="button" @click="createBookChapter">＋ Глава</button>
+          <button v-if="!hasBookChapterZero" class="chapter-zero-add" type="button" title="Добавить вступление перед первой главой"
+                  @click="createBookZeroChapter">＋ Глава 0</button>
           <button type="button" :disabled="!currentBookChapter" @click="moveBookChapter(-1)">↑</button>
           <button type="button" :disabled="!currentBookChapter" @click="moveBookChapter(1)">↓</button>
           <button type="button" :disabled="!currentBookChapter" title="Дублировать главу" @click="duplicateBookChapter">⧉</button>
@@ -747,6 +817,9 @@
     </main>
 
     <section v-if="activeWorkspace === 'video'" class="timeline-panel">
+      <div class="timeline-resizer" role="separator" aria-label="Изменить высоту таймлайна"
+           aria-orientation="horizontal" :aria-valuenow="timelineHeight"
+           @pointerdown="startTimelineResize" @dblclick="resetTimelineHeight"></div>
       <div class="timeline-toolbar">
         <div class="timeline-title">
           <span class="eyebrow">Монтаж</span>
@@ -758,17 +831,29 @@
             <span>¶</span> Текст книги
           </button>
           <button type="button" class="music-mixer-shortcut"
-                  :class="{ active: selection.type === 'music', empty: !musicAsset }"
+                  :class="{ active: selection.type === 'music', empty: !displayMusicClips.length }"
                   @click="select('music')">
-            <span>♫</span>{{ musicAsset ? `Музыка · ${Math.round(project.music.volume * 100)}%` : 'Добавить музыку' }}
+            <span>♫</span>{{ displayMusicClips.length ? `Музыка · ${displayMusicClips.length} клип.` : 'Добавить музыку' }}
           </button>
+          <button type="button" class="magnet-toggle" :class="{ active: timelineSnap }"
+                  :aria-pressed="timelineSnap"
+                  :title="`Магнит: ${timelineSnap ? 'включён' : 'выключен'} (N)`"
+                  @click="toggleTimelineSnap">
+            <span class="magnet-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><path d="M5 3.5v8.2a7 7 0 0 0 14 0V3.5M5 8.5h5v3.2a2 2 0 0 0 4 0V8.5h5M5 3.5h5v5H5zM14 3.5h5v5h-5z" /></svg>
+            </span>
+            <b>Магнит</b><small>{{ timelineSnap ? 'Вкл' : 'Выкл' }}</small>
+          </button>
+          <button type="button" :disabled="!selectedMusicClip" title="Разрезать выбранный клип по курсору (S)"
+                  @click="splitSelectedMusicClip"><span>✂</span> Разрезать</button>
           <button type="button" @click="addChapterAtCursor"><span>＋</span> Глава</button>
           <button type="button" @click="addSceneAtCursor"><span>＋</span> Сцена</button>
-          <label class="zoom-control" title="Масштаб таймлайна"><span>−</span><input v-model.number="timelineZoom" type="range" min="1" max="6" step="0.25" /><span>＋</span></label>
+          <label class="zoom-control" title="Масштаб таймлайна"><span>−</span><input v-model.number="timelineZoom" type="range" min="1" max="12" step="0.25" /><span>＋</span></label>
         </div>
       </div>
 
-      <div ref="timelineScroll" class="timeline-scroll">
+      <div ref="timelineScroll" class="timeline-scroll"
+           @wheel="onTimelineWheel" @pointerdown="startTimelinePan">
         <div class="timeline-labels">
           <div class="ruler-spacer"></div>
           <div><span class="track-icon chapter"></span>Главы</div>
@@ -777,11 +862,12 @@
           <div><span class="track-icon audio"></span>Аудио</div>
           <button type="button" class="timeline-track-button" @click="select('music')">
             <span class="track-icon music"></span>
-            <span>Музыка<small>{{ musicAsset ? `${Math.round(project.music.volume * 100)}%` : 'добавить' }}</small></span>
+            <span>Музыка<small>{{ displayMusicClips.length ? `${displayMusicClips.length} клип.` : 'перетащите сюда' }}</small></span>
           </button>
         </div>
-        <div ref="timelineContent" class="timeline-content" :class="{ scrubbing: timelineScrubbing }"
-             :style="{ width: `${timelineZoom * 100}%` }">
+        <div ref="timelineContent" class="timeline-content"
+             :class="{ scrubbing: timelineScrubbing, 'snap-enabled': timelineSnap }"
+             :style="timelineContentStyle">
           <div class="timeline-ruler" @pointerdown="startTimelineScrub">
             <span v-for="mark in rulerMarks" :key="mark.p" :style="{ left: `${mark.p}%` }"><i></i>{{ mark.label }}</span>
           </div>
@@ -791,6 +877,8 @@
                     :class="{ active: currentChapter?.id === chapter.id, selected: selection.type === 'chapter' && selection.id === chapter.id }"
                     :style="clipStyle(chapter.start_seconds, chapter.end_seconds, 0.35)"
                     @click.stop="selectChapter(chapter)">
+              <i v-if="chapter.index > 0" class="chapter-boundary-handle" title="Переместить границу главы"
+                 @pointerdown.stop="startChapterBoundaryPointer($event, chapter)"></i>
               <b>{{ chapter.title }}</b>
             </button>
           </div>
@@ -798,8 +886,12 @@
           <div class="timeline-lane scene-lane" @pointerdown.self="startTimelineScrub">
             <button v-for="scene in project.scenes" :key="scene.id" type="button" class="scene-clip"
                     :class="{ active: currentScene?.id === scene.id, selected: selection.type === 'scene' && selection.id === scene.id }"
-                    :style="clipStyle(scene.start, scene.end, 0.8)" @click.stop="selectScene(scene)">
+                    :style="clipStyle(scene.start, scene.end, 0.8)"
+                    @pointerdown.stop="startSceneClipPointer($event, scene, 'move')"
+                    @click.stop="selectScene(scene)">
+              <span class="scene-trim-handle start" @pointerdown.stop="startSceneClipPointer($event, scene, 'trim-start')"></span>
               <i></i><b>{{ scene.name }}</b>
+              <span class="scene-trim-handle end" @pointerdown.stop="startSceneClipPointer($event, scene, 'trim-end')"></span>
             </button>
           </div>
 
@@ -824,22 +916,39 @@
                     type="button" class="chapter-audio-clip"
                     :class="{ active: currentChapter?.id === chapter.id }"
                     :style="clipStyle(chapter.start_seconds, chapter.end_seconds, 0.35)"
+                    :title="`${chapter.title} · аудио прикреплено к границам главы`"
                     @click.stop="selectVideoChapterAudio(chapter)">
-              <i></i><b>{{ chapter.title }}</b>
+              <i></i><b>🔗 {{ chapter.title }}</b>
             </button>
           </div>
 
-          <div class="timeline-lane music-lane" @pointerdown.self="startTimelineScrub">
-            <button v-if="musicAsset" type="button" class="music-clip"
-                    :class="{ muted: !project.music.enabled }"
-                    :style="clipStyle(0, duration, 100)"
-                    @click.stop="select('music')">
+          <div class="timeline-lane music-lane" @pointerdown.self="startTimelineScrub"
+               @dragover.prevent="onMusicLaneDragOver" @drop.prevent="dropMusicOnTimeline">
+            <button v-for="clip in displayMusicClips" :key="clip.id" type="button" class="music-clip"
+                    :class="{ muted: !project.music.enabled || clip.enabled === false, selected: selectedMusicClip?.id === clip.id }"
+                    :style="clipStyle(clip.start, clip.end, 0.35)"
+                    :title="`${assetById(clip.assetId)?.name || 'Музыка'} · перетаскивание: сдвиг, края: подрезка, Alt+клик: разрез`"
+                    @pointerdown.stop="startMusicClipPointer($event, clip, 'move')"
+                    @click.stop="selectMusicClip(clip)">
+              <i class="music-trim-handle start" aria-hidden="true"
+                 @pointerdown.stop="startMusicClipPointer($event, clip, 'trim-start')"></i>
               <span aria-hidden="true">♫</span>
-              <b>{{ musicAsset.name }}</b>
-              <small>{{ project.music.enabled ? `${Math.round(project.music.volume * 100)}% · EQ ${musicEqSummary}` : 'выключена' }}</small>
+              <b>{{ assetById(clip.assetId)?.name || 'Музыка' }}</b>
+              <small>{{ clipChapterLabel(clip) }}</small>
+              <i class="music-trim-handle end" aria-hidden="true"
+                 @pointerdown.stop="startMusicClipPointer($event, clip, 'trim-end')"></i>
             </button>
+            <p v-if="!displayMusicClips.length" class="music-lane-empty">Перетащите аудиофайл из материалов на нужную главу</p>
           </div>
 
+          <i v-for="chapter in timelineChapters" :key="`grid-${chapter.id}`"
+             class="timeline-chapter-grid-line" :style="{ left: `${chapter.start_seconds / Math.max(duration, 1) * 100}%` }"
+             :title="chapter.title"></i>
+          <div v-if="snapGuideTime !== null" class="timeline-snap-guide"
+               :class="{ reverse: snapGuideTime / Math.max(duration, 1) > 0.82 }"
+               :style="{ left: `${snapGuideTime / Math.max(duration, 1) * 100}%` }">
+            <span>{{ snapGuideLabel }}</span>
+          </div>
           <div v-if="selectedExcerpt" class="timeline-excerpt-range"
                :style="clipStyle(selectedExcerpt.start, selectedExcerpt.end, 0.2)"
                :title="`Выбранный текст · ${formatTime(selectedExcerpt.start)}–${formatTime(selectedExcerpt.end)}`"></div>
@@ -1135,10 +1244,25 @@ const DEFAULT_MUSIC_MIX = Object.freeze({
   treble: 0,
 })
 
+const VISUALIZER_COLOR_PRESETS = Object.freeze([
+  { id: 'spectrum', label: 'Спектр', colors: ['#ffad27', '#d74fe8', '#55ddcf', '#b750da'] },
+  { id: 'amber', label: 'Янтарь', colors: ['#ffcf5a', '#ff9d24', '#eb5b2a', '#ffcf5a'] },
+  { id: 'violet', label: 'Фиолет', colors: ['#d9a7ff', '#a968f0', '#6533b8', '#c279ff'] },
+  { id: 'ocean', label: 'Океан', colors: ['#7ce7ff', '#26a7df', '#2458c6', '#55ddcf'] },
+  { id: 'mint', label: 'Мята', colors: ['#c3ffe6', '#55ddcf', '#2ca77e', '#88f0bf'] },
+  { id: 'fire', label: 'Огонь', colors: ['#fff071', '#ff9a2e', '#f04444', '#ffcf5a'] },
+  { id: 'rose', label: 'Роза', colors: ['#ffd0e4', '#fa73aa', '#b93478', '#ff8ec1'] },
+  { id: 'ice', label: 'Лёд', colors: ['#effcff', '#a9e7ff', '#72a8ff', '#c7f4ff'] },
+  { id: 'acid', label: 'Кислота', colors: ['#efff62', '#92f542', '#2bcf75', '#d8ff48'] },
+  { id: 'mono', label: 'Моно', colors: ['#ffffff', '#c8c8cf', '#777780', '#eeeeef'] },
+  { id: 'copper', label: 'Медь', colors: ['#ffd0a1', '#c8783a', '#7e3f25', '#e7a268'] },
+  { id: 'night', label: 'Ночь', colors: ['#9aa8ff', '#5c67d9', '#303478', '#7d65d8'] },
+])
+
 const DEFAULT_LAYERS = {
   cover: { visible: true, x: 7, y: 17, w: 27, h: 66 },
   title: { visible: true, x: 39, y: 23, w: 54, h: 31, fontSize: 48, color: '#f4f0e8' },
-  visualizer: { visible: true, x: 38, y: 59, w: 56, h: 23 },
+  visualizer: { visible: true, x: 38, y: 59, w: 56, h: 23, colorPreset: 'spectrum' },
   caption: { visible: true, x: 14, y: 69, w: 72, h: 18, fontSize: 28, fontWeight: 400, backgroundOpacity: 0.68 },
 }
 
@@ -1153,7 +1277,7 @@ function clone(value) {
 
 function freshProject() {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     title: 'Новая аудиокнига',
     author: '',
     theme: 'amber',
@@ -1164,8 +1288,11 @@ function freshProject() {
     videoAssetId: null,
     coverAssetId: null,
     backgroundAssetId: null,
+    coverMode: 'cover',
+    backgroundBlur: true,
     captions: { enabled: false, wordsPerCard: 14 },
     music: clone(DEFAULT_MUSIC_MIX),
+    musicClips: [],
     materials: [],
     chapters: [],
     scenes: [{ id: uid('scene'), name: 'Основная сцена', start: 0, end: 60, backgroundAssetId: null }],
@@ -1191,6 +1318,10 @@ const currentBookChapterId = ref(null)
 const bookChapterTitle = ref('')
 const bookChapterContent = ref('')
 const bookSaveState = ref('saved')
+const bookVideoTextSyncState = ref('idle')
+const draggedBookChapterId = ref(null)
+const bookChapterDropId = ref(null)
+const bookChapterDropSide = ref('before')
 const bookInspectorState = ref(localStorage.getItem('bookender.bookInspector') || 'open')
 const bookMetadata = reactive({ title: '', author: '', description: '' })
 const bookTts = reactive({
@@ -1216,6 +1347,8 @@ const bookPlayerDuration = ref(0)
 const bookPlayerPlaying = ref(false)
 const bookPlayerVolume = ref(0.86)
 let bookAutosaveTimer = null
+let bookEditRevision = 0
+let bookSavePromise = null
 let ttsPollTimer = null
 let bookPlayerLoadToken = 0
 let bookPlayerShouldAutoplay = false
@@ -1257,6 +1390,11 @@ const musicEqState = reactive({
 const waveformSamples = ref([])
 const timelineZoom = ref(1)
 const timelineScrubbing = ref(false)
+const timelineSnap = ref(localStorage.getItem('bookender.timelineSnap') !== 'false')
+const snapGuideTime = ref(null)
+const snapGuideLabel = ref('')
+const storedTimelineHeight = Number(localStorage.getItem('bookender.timelineHeight'))
+const timelineHeight = ref(Number.isFinite(storedTimelineHeight) && storedTimelineHeight >= 160 ? storedTimelineHeight : 306)
 
 const showExport = ref(false)
 const showBookExport = ref(false)
@@ -1295,6 +1433,10 @@ let musicHighFilter = null
 let musicGain = null
 let timelinePointerMove = null
 let timelinePointerUp = null
+let timelineResizeMove = null
+let timelineResizeUp = null
+let timelinePanMove = null
+let timelinePanUp = null
 let resumeAfterTimelineScrub = false
 const visualizerLevels = new Float32Array(72)
 const visualizerPeaks = new Float32Array(72)
@@ -1302,10 +1444,14 @@ const objectUrls = new Set()
 
 const assetById = (id) => project.materials.find((item) => item.id === id) || null
 const audioAsset = computed(() => assetById(project.audioAssetId))
-const musicAsset = computed(() => assetById(project.musicAssetId))
+const musicAsset = computed(() => assetById(selectedMusicClip.value?.assetId || project.musicAssetId))
 const videoAsset = computed(() => assetById(project.videoAssetId))
 const coverAsset = computed(() => assetById(project.coverAssetId))
 const backgroundAsset = computed(() => assetById(project.backgroundAssetId))
+const coverEnabled = computed(() => project.coverMode !== 'background-only' && layerVisible('cover'))
+const coverRequirementMet = computed(() => (
+  project.coverMode === 'background-only' ? Boolean(backgroundAsset.value) : Boolean(coverAsset.value)
+))
 const imageAssets = computed(() => project.materials.filter((item) => item.type === 'image'))
 const musicCandidates = computed(() => project.materials.filter((item) => (
   item.type === 'audio'
@@ -1340,12 +1486,17 @@ const managedProjects = computed(() => {
 const bookWordCount = computed(() => (
   (bookChapterContent.value.trim().match(/[\p{L}\p{N}]+(?:[-’'][\p{L}\p{N}]+)*/gu) || []).length
 ))
-const bookSaveLabel = computed(() => ({
-  modified: 'Есть изменения',
-  saving: 'Сохраняется…',
-  saved: 'Сохранено',
-  error: 'Ошибка сохранения',
-}[bookSaveState.value] || 'Сохранено'))
+const bookSaveLabel = computed(() => {
+  const base = ({
+    modified: 'Есть изменения',
+    saving: 'Сохраняется…',
+    saved: 'Сохранено',
+    error: 'Ошибка сохранения',
+  }[bookSaveState.value] || 'Сохранено')
+  if (bookVideoTextSyncState.value === 'syncing') return `${base} · текст → видео`
+  if (bookVideoTextSyncState.value === 'error') return `${base} · видео ожидает обновления`
+  return base
+})
 const currentChapterAudios = computed(() => (
   (activeProjectRecord.value?.audio_assets || [])
     .filter((asset) => asset.chapter_id === currentBookChapterId.value)
@@ -1452,7 +1603,10 @@ const ttsProgressState = computed(() => {
   }
 })
 const audioSource = computed(() => assetUrl(audioAsset.value))
-const musicSource = computed(() => assetUrl(musicAsset.value))
+const musicSource = computed(() => {
+  if (playing.value && !activeMusicClip.value) return ''
+  return assetUrl(assetById(musicPlaybackClip.value?.assetId) || musicAsset.value)
+})
 const videoSource = computed(() => assetUrl(videoAsset.value))
 const coverSource = computed(() => assetUrl(coverAsset.value))
 
@@ -1481,6 +1635,36 @@ const musicEqSummary = computed(() => {
   const values = MUSIC_EQ_BANDS.map((band) => Number(project.music?.[band.key]) || 0)
   return values.every((value) => value === 0) ? 'ровно' : values.map((value) => `${value > 0 ? '+' : ''}${value}`).join('/')
 })
+const displayMusicClips = computed(() => {
+  if (project.musicClips.length) return project.musicClips
+  if (!project.musicAssetId) return []
+  return [{
+    id: 'music-legacy',
+    assetId: project.musicAssetId,
+    start: 0,
+    end: Math.max(duration.value, 0.1),
+    sourceOffset: 0,
+    volume: 1,
+    enabled: true,
+    legacy: true,
+  }]
+})
+const selectedMusicClip = computed(() => (
+  selection.type === 'music' && selection.id
+    ? displayMusicClips.value.find((clip) => clip.id === selection.id) || null
+    : null
+))
+const activeMusicClip = computed(() => {
+  const now = currentTime.value
+  return [...displayMusicClips.value]
+    .reverse()
+    .find((clip) => clip.enabled !== false && now >= Number(clip.start) && now < Number(clip.end)) || null
+})
+const musicPlaybackClip = computed(() => (
+  playing.value
+    ? activeMusicClip.value
+    : activeMusicClip.value || selectedMusicClip.value || displayMusicClips.value[0] || null
+))
 
 const timelineChapters = computed(() => {
   const sorted = [...project.chapters].sort((a, b) => a.start_seconds - b.start_seconds)
@@ -1503,6 +1687,9 @@ const filteredNavigatorChapters = computed(() => {
     || String(chapter.text || '').toLocaleLowerCase('ru-RU').includes(query)
   ))
 })
+const hasBookChapterZero = computed(() => (
+  (activeProjectRecord.value?.chapters || []).some((chapter) => Boolean(chapter.is_zero))
+))
 const navigatorChapter = computed(() => (
   timelineChapters.value.find((chapter) => chapter.id === textNavigatorChapterId.value)
   || currentChapter.value
@@ -1585,11 +1772,14 @@ const currentScene = computed(() => {
 })
 
 const currentChapterImageAsset = computed(() => assetById(currentChapter.value?.imageAssetId))
-const sceneBackgroundAsset = computed(() => (
-  currentChapterImageAsset.value
-  || assetById(currentScene.value?.backgroundAssetId)
-  || backgroundAsset.value
-))
+const sceneBackgroundAsset = computed(() => {
+  if (project.coverMode === 'background-only') return backgroundAsset.value
+  return (
+    currentChapterImageAsset.value
+    || assetById(currentScene.value?.backgroundAssetId)
+    || backgroundAsset.value
+  )
+})
 const backgroundSource = computed(() => assetUrl(sceneBackgroundAsset.value))
 const backgroundStyle = computed(() => backgroundSource.value
   ? { backgroundImage: `url("${backgroundSource.value.replaceAll('"', '%22')}")` }
@@ -1599,14 +1789,23 @@ const backgroundThumbnailStyle = computed(() => backgroundSource.value
   : {})
 const currentReadingCaption = computed(() => {
   if (!project.captions?.enabled || !currentChapter.value?.text) return ''
-  const start = Number(currentChapter.value.start_seconds) || 0
-  const end = Math.max(start + 0.1, Number(currentChapter.value.end_seconds) || start + 0.1)
-  const fraction = Math.max(0, Math.min(0.999999, (currentTime.value - start) / (end - start)))
-  const chunks = readingCaptionChunks(
-    currentChapter.value.text,
-    Number(project.captions.wordsPerCard) || 14,
-  )
-  return chunks[Math.min(chunks.length - 1, Math.floor(fraction * chunks.length))] || ''
+  const words = chapterTimelineWords(currentChapter.value)
+  if (!words.length) return ''
+  let low = 0
+  let high = words.length - 1
+  let activeIndex = 0
+  while (low <= high) {
+    const middle = Math.floor((low + high) / 2)
+    if (words[middle].start <= currentTime.value) {
+      activeIndex = middle
+      low = middle + 1
+    } else {
+      high = middle - 1
+    }
+  }
+  const size = Math.max(6, Math.min(28, Number(project.captions.wordsPerCard) || 14))
+  const cardStart = Math.floor(activeIndex / size) * size
+  return words.slice(cardStart, cardStart + size).map((word) => word.text).join(' ')
 })
 
 const selectedAsset = computed(() => selection.type === 'asset' ? assetById(selection.id) : null)
@@ -1631,19 +1830,34 @@ const rulerMarks = computed(() => Array.from({ length: 11 }, (_, index) => ({
   p: index * 10,
   label: formatTime(duration.value * index / 10),
 })))
+const timelineGridStep = computed(() => {
+  const target = duration.value / Math.max(10, 10 * timelineZoom.value)
+  const steps = [0.1, 0.2, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 1200]
+  return steps.find((step) => step >= target) || steps[steps.length - 1]
+})
+const timelineContentStyle = computed(() => ({
+  width: `${timelineZoom.value * 100}%`,
+  '--timeline-grid-size': `${Math.max(0.04, timelineGridStep.value / Math.max(duration.value, 1) * 100)}%`,
+  '--timeline-grid-major-size': `${Math.max(0.2, timelineGridStep.value * 5 / Math.max(duration.value, 1) * 100)}%`,
+}))
 
 const hasUploadingAssets = computed(() => project.materials.some((item) => item.status === 'uploading'))
-const canOpenExport = computed(() => backend.online && !!audioAsset.value && !!coverAsset.value && project.chapters.length > 0 && !hasUploadingAssets.value)
+const canOpenExport = computed(() => backend.online && !!audioAsset.value && coverRequirementMet.value && project.chapters.length > 0 && !hasUploadingAssets.value)
 const exportIssue = computed(() => {
   if (!backend.online) return 'Медиадвижок недоступен. Запустите проект через run.bat.'
   if (!audioAsset.value) return 'Добавьте основную аудиокнигу.'
-  if (!coverAsset.value) return 'Назначьте изображение обложкой.'
+  if (!coverRequirementMet.value) {
+    return project.coverMode === 'background-only'
+      ? 'Назначьте изображение единым задником.'
+      : 'Назначьте изображение обложкой.'
+  }
   if (!project.chapters.length) return 'Добавьте хотя бы одну главу.'
   if (hasUploadingAssets.value) return 'Дождитесь завершения синхронизации файлов.'
   if (exportReadiness.value && exportReadiness.value.ready === false) {
     const labels = {
       audio: 'Backend не видит выбранное аудио.',
       cover: 'Backend не видит выбранную обложку.',
+      background: 'Backend не видит выбранный задник.',
       chapters: 'Главы не сохранены.',
       'audio-decodable': 'Выбранный аудиофайл повреждён или не читается FFmpeg. Назначьте другую копию из материалов.',
       'chapters-duration-mismatch': 'Главы не покрывают всю аудиокнигу. Продлите последнюю главу или обновите разметку из RPP.',
@@ -1811,8 +2025,26 @@ function normalizeProject(value) {
   const normalized = {
     ...base,
     ...source,
+    coverMode: source.coverMode === 'background-only' ? 'background-only' : 'cover',
+    backgroundBlur: source.backgroundBlur !== false,
     captions: { ...base.captions, ...(source.captions || {}) },
     music: { ...base.music, ...(source.music || {}) },
+    musicClips: Array.isArray(source.musicClips) ? source.musicClips
+      .filter((clip) => clip && typeof clip === 'object' && clip.assetId)
+      .map((clip) => {
+        const start = Math.max(0, Number(clip.start) || 0)
+        return {
+          id: clip.id || uid('music-clip'),
+          assetId: clip.assetId,
+          start,
+          end: Math.max(start + 0.05, Number(clip.end) || start + 30),
+          sourceOffset: Math.max(0, Number(clip.sourceOffset) || 0),
+          volume: Math.max(0, Math.min(2, Number.isFinite(Number(clip.volume)) ? Number(clip.volume) : 1)),
+          enabled: clip.enabled !== false,
+          chapterId: clip.chapterId || null,
+          chapterBound: clip.chapterBound === true,
+        }
+      }) : [],
     renderPreset: RENDER_PRESETS[source.renderPreset] ? source.renderPreset : base.renderPreset,
     materials: Array.isArray(source.materials) ? source.materials.map((asset) => ({
       ...asset,
@@ -1835,6 +2067,24 @@ function normalizeProject(value) {
       visualizer: { ...DEFAULT_LAYERS.visualizer, ...(source.layers?.visualizer || {}) },
       caption: { ...DEFAULT_LAYERS.caption, ...(source.layers?.caption || {}) },
     },
+  }
+  if (!VISUALIZER_COLOR_PRESETS.some((preset) => preset.id === normalized.layers.visualizer.colorPreset)) {
+    normalized.layers.visualizer.colorPreset = DEFAULT_LAYERS.visualizer.colorPreset
+  }
+  if (!Array.isArray(source.musicClips) && normalized.musicAssetId) {
+    const legacyEnd = Number(source.duration_seconds || source.durationSeconds || source.audioDuration)
+      || normalized.chapters.reduce((maximum, chapter) => Math.max(maximum, Number(chapter.end_seconds) || 0), 0)
+      || normalized.scenes.reduce((maximum, scene) => Math.max(maximum, Number(scene.end) || 0), 0)
+      || 60
+    normalized.musicClips.push({
+      id: uid('music-clip'),
+      assetId: normalized.musicAssetId,
+      start: 0,
+      end: Math.max(0.1, legacyEnd),
+      sourceOffset: 0,
+      volume: 1,
+      enabled: true,
+    })
   }
   return normalized
 }
@@ -1869,6 +2119,245 @@ function serializeProject() {
 function select(type, id = null) {
   selection.type = type
   selection.id = id
+}
+
+function ensureExplicitMusicClips() {
+  if (project.musicClips.length || !project.musicAssetId) return project.musicClips
+  project.musicClips.push({
+    id: uid('music-clip'),
+    assetId: project.musicAssetId,
+    start: 0,
+    end: Math.max(duration.value, 0.1),
+    sourceOffset: 0,
+    volume: 1,
+    enabled: true,
+    chapterId: null,
+    chapterBound: false,
+  })
+  return project.musicClips
+}
+
+function chapterAtTime(time) {
+  return timelineChapters.value.find((chapter) => (
+    time >= Number(chapter.start_seconds) && time < Number(chapter.end_seconds)
+  )) || null
+}
+
+function bindMusicClipToMatchingChapter(clip) {
+  if (!timelineSnap.value) {
+    clip.chapterId = null
+    clip.chapterBound = false
+    return
+  }
+  const chapter = timelineChapters.value.find((item) => (
+    Math.abs(Number(item.start_seconds) - Number(clip.start)) < 0.025
+    && Math.abs(Number(item.end_seconds) - Number(clip.end)) < 0.025
+  ))
+  clip.chapterId = chapter?.id || null
+  clip.chapterBound = !!chapter
+}
+
+function syncChapterBoundMusicClips() {
+  for (const clip of project.musicClips) {
+    if (!clip.chapterBound || !clip.chapterId) continue
+    const chapter = timelineChapters.value.find((item) => item.id === clip.chapterId)
+    if (!chapter) {
+      clip.chapterId = null
+      clip.chapterBound = false
+      continue
+    }
+    clip.start = Number(chapter.start_seconds)
+    clip.end = Number(chapter.end_seconds)
+  }
+}
+
+function toggleTimelineSnap() {
+  timelineSnap.value = !timelineSnap.value
+  snapGuideTime.value = null
+  localStorage.setItem('bookender.timelineSnap', String(timelineSnap.value))
+  setNotice(
+    timelineSnap.value
+      ? 'Магнит включён: главы, сцены, аудио и музыка прилипают к сетке'
+      : 'Магнит выключен: элементы двигаются свободно',
+    'info',
+    2600,
+  )
+}
+
+function addMusicClip(assetId, time = currentTime.value) {
+  const position = Math.max(0, Math.min(Number(time) || 0, duration.value || Number(time) || 0))
+  const chapter = timelineSnap.value ? chapterAtTime(position) : null
+  const start = chapter ? Number(chapter.start_seconds) : position
+  const end = chapter
+    ? Number(chapter.end_seconds)
+    : duration.value > start
+      ? Math.min(duration.value, start + 30)
+      : start + 30
+  const clip = {
+    id: uid('music-clip'),
+    assetId,
+    start,
+    end: Math.max(start + 0.05, end),
+    sourceOffset: 0,
+    volume: 1,
+    enabled: true,
+    chapterId: chapter?.id || null,
+    chapterBound: !!chapter,
+  }
+  project.musicClips.push(clip)
+  project.musicAssetId ||= assetId
+  project.music.enabled = true
+  dirty.value = true
+  return clip
+}
+
+function selectMusicClip(clip) {
+  if (clip.legacy) {
+    const [materialized] = ensureExplicitMusicClips()
+    select('music', materialized?.id || null)
+    return
+  }
+  select('music', clip.id)
+}
+
+function changeSelectedMusicAsset(assetId) {
+  if (selectedMusicClip.value) {
+    const clipId = selectedMusicClip.value.id
+    if (selectedMusicClip.value.legacy) ensureExplicitMusicClips()
+    const clip = project.musicClips.find((item) => item.id === clipId)
+      || project.musicClips[0]
+    if (!assetId) {
+      if (clip) removeMusicClip(clip.id)
+      return
+    }
+    if (clip) clip.assetId = assetId
+  } else {
+    project.musicAssetId = assetId
+    if (assetId && !project.musicClips.length) addMusicClip(assetId, currentTime.value)
+  }
+  if (assetId) {
+    const asset = assetById(assetId)
+    if (asset) asset.role = 'music'
+    project.musicAssetId ||= assetId
+    project.music.enabled = true
+  }
+  onMusicSelectionChanged()
+}
+
+function updateMusicClipTime(key, value) {
+  const clip = selectedMusicClip.value
+  if (!clip) return
+  if (clip.legacy) {
+    ensureExplicitMusicClips()
+    select('music', project.musicClips[0]?.id || null)
+    return updateMusicClipTime(key, value)
+  }
+  clip.chapterId = null
+  clip.chapterBound = false
+  const parsed = Math.max(0, parseTimecode(value))
+  if (key === 'start') {
+    const previousStart = clip.start
+    clip.start = Math.min(parsed, clip.end - 0.05)
+    clip.sourceOffset = Math.max(0, clip.sourceOffset + clip.start - previousStart)
+  } else {
+    clip.end = Math.max(clip.start + 0.05, Math.min(parsed, duration.value || parsed))
+  }
+}
+
+function removeMusicClip(id) {
+  if (id === 'music-legacy') {
+    ensureExplicitMusicClips()
+    id = project.musicClips[0]?.id
+  }
+  const index = project.musicClips.findIndex((clip) => clip.id === id)
+  if (index < 0) return
+  project.musicClips.splice(index, 1)
+  select('music', project.musicClips[index]?.id || project.musicClips[index - 1]?.id || null)
+  if (!project.musicClips.length) {
+    project.musicAssetId = null
+    musicEl.value?.pause()
+  }
+}
+
+function splitMusicClip(clip, time) {
+  if (!clip) return false
+  if (clip.legacy) {
+    ensureExplicitMusicClips()
+    clip = project.musicClips[0]
+  }
+  const cut = Math.max(clip.start, Math.min(Number(time) || 0, clip.end))
+  if (cut <= clip.start + 0.05 || cut >= clip.end - 0.05) {
+    setNotice('Курсор должен находиться внутри музыкального клипа', 'warning')
+    return false
+  }
+  const right = {
+    ...clone(clip),
+    id: uid('music-clip'),
+    start: cut,
+    sourceOffset: Math.max(0, Number(clip.sourceOffset) + cut - clip.start),
+    chapterId: null,
+    chapterBound: false,
+  }
+  clip.end = cut
+  clip.chapterId = null
+  clip.chapterBound = false
+  project.musicClips.push(right)
+  project.musicClips.sort((a, b) => a.start - b.start)
+  select('music', right.id)
+  setNotice(`Клип разрезан в ${formatTime(cut, true)}`, 'success')
+  return true
+}
+
+function splitSelectedMusicClip() {
+  splitMusicClip(selectedMusicClip.value, currentTime.value)
+}
+
+function splitMusicClipAtPointer(event, clip) {
+  seekTo(timelineTimeFromPointer(event))
+  splitMusicClip(clip, currentTime.value)
+}
+
+function clipChapterLabel(clip) {
+  const chapter = chapterAtTime(Number(clip.start) + 0.001)
+  const clipVolume = Number.isFinite(Number(clip.volume)) ? Number(clip.volume) : 1
+  const level = Math.round(clipVolume * project.music.volume * 100)
+  return `${clip.chapterBound ? '🔗 ' : ''}${chapter?.title || formatTime(clip.start)} · ${level}%`
+}
+
+function startMaterialDrag(asset, event) {
+  if (asset.type !== 'audio' || !event.dataTransfer) {
+    event.preventDefault()
+    return
+  }
+  event.dataTransfer.effectAllowed = 'copy'
+  event.dataTransfer.setData('application/x-suviren-audio-asset-id', asset.id)
+  event.dataTransfer.setData('text/plain', asset.name)
+}
+
+function onMusicLaneDragOver(event) {
+  const hasAudioAsset = event.dataTransfer?.types?.includes('application/x-suviren-audio-asset-id')
+  const hasFiles = event.dataTransfer?.types?.includes('Files')
+  if (event.dataTransfer) event.dataTransfer.dropEffect = hasAudioAsset || hasFiles ? 'copy' : 'none'
+}
+
+function dropMusicOnTimeline(event) {
+  const rawTime = timelineTimeFromPointer(event)
+  const time = timelineSnap.value ? snapTimelineTime(rawTime) : rawTime
+  const assetId = event.dataTransfer?.getData('application/x-suviren-audio-asset-id')
+  if (assetId && assetById(assetId)?.type === 'audio') {
+    ensureExplicitMusicClips()
+    const clip = addMusicClip(assetId, time)
+    select('music', clip.id)
+    seekTo(clip.start)
+    setNotice(`Музыка добавлена на «${chapterAtTime(clip.start)?.title || formatTime(clip.start)}»`, 'success')
+    showTimelineSnap(null)
+    return
+  }
+  const files = [...(event.dataTransfer?.files || [])]
+  if (files.length) {
+    importFiles(files, { asMusic: true, timelineTime: time })
+    showTimelineSnap(null)
+  }
 }
 
 function setNotice(text, kind = 'info', timeout = 4200) {
@@ -1930,8 +2419,10 @@ async function renameManagedProject(item) {
     })
     await Promise.all([loadProjectCatalog(), loadManagerCatalog()])
     if (item.uuid === activeProjectUuid.value) {
-      activeProjectRecord.value = await apiRequest(`/projects/${encodeURIComponent(item.uuid)}`)
-      hydrateBookState(activeProjectRecord.value)
+      const record = await apiRequest(`/projects/${encodeURIComponent(item.uuid)}`)
+      installBookRecord(record, {
+        preserveDraft: bookSaveState.value !== 'saved' || Boolean(bookSavePromise),
+      })
     }
   } catch (error) {
     setNotice(`Не удалось переименовать проект: ${error.message}`, 'error')
@@ -2048,6 +2539,8 @@ function hydrateBookState(record) {
   bookChapterTitle.value = preferred?.title || ''
   bookChapterContent.value = preferred?.content || ''
   bookSaveState.value = 'saved'
+  bookVideoTextSyncState.value = 'idle'
+  bookEditRevision = 0
   previewAudio.value = null
   const chapterAssets = (record?.audio_assets || []).filter((asset) => asset.chapter_id === preferred?.id)
   selectedBookAudioId.value = (
@@ -2058,9 +2551,39 @@ function hydrateBookState(record) {
   stopBookPlayer()
 }
 
+function installBookRecord(record, { preserveDraft = false } = {}) {
+  const draft = preserveDraft && currentBookChapterId.value
+    ? {
+        chapterId: currentBookChapterId.value,
+        title: bookChapterTitle.value,
+        content: bookChapterContent.value,
+        saveState: bookSaveState.value,
+        videoSyncState: bookVideoTextSyncState.value,
+        revision: bookEditRevision,
+      }
+    : null
+  activeProjectRecord.value = record
+  hydrateBookState(record)
+  if (!draft || !record?.chapters?.some((chapter) => chapter.id === draft.chapterId)) return
+  currentBookChapterId.value = draft.chapterId
+  bookChapterTitle.value = draft.title
+  bookChapterContent.value = draft.content
+  bookSaveState.value = draft.saveState
+  bookVideoTextSyncState.value = draft.videoSyncState
+  bookEditRevision = draft.revision
+}
+
 function addBookAudioToVideo(record) {
   const grouped = new Map()
+  const chapterHashes = new Map(
+    (record?.chapters || []).map((chapter) => [chapter.id, chapter.content_hash]),
+  )
   for (const audio of record?.audio_assets || []) {
+    const chapterHash = chapterHashes.get(audio.chapter_id)
+    if (
+      audio.is_stale
+      || (audio.source_text_hash && chapterHash && audio.source_text_hash !== chapterHash)
+    ) continue
     const key = audio.chapter_id ?? `book-${audio.id}`
     const current = grouped.get(key)
     const rank = [
@@ -2178,10 +2701,17 @@ function syncBookChaptersToVideo(record, master = null) {
   const audioMaterials = addBookAudioToVideo(record)
   const images = addBookVisualsToVideo(record)
   const selectedCover = assetById(project.coverAssetId)
-  if (images.size && (!selectedCover || selectedCover.role === 'default-cover')) {
-    project.coverAssetId = images.values().next().value.id
-  } else if (!selectedCover) {
-    ensureDefaultVideoCover()
+  if (project.coverMode === 'background-only') {
+    project.coverAssetId = null
+    if (!backgroundAsset.value && images.size) {
+      project.backgroundAssetId = images.values().next().value.id
+    }
+  } else {
+    if (images.size && (!selectedCover || selectedCover.role === 'default-cover')) {
+      project.coverAssetId = images.values().next().value.id
+    } else if (!selectedCover) {
+      ensureDefaultVideoCover()
+    }
   }
   const timings = new Map((master?.chapters || []).map((item) => [item.chapter_id, item]))
   const existing = new Map(project.chapters.map((item) => [item.chapterId, item]))
@@ -2201,6 +2731,8 @@ function syncBookChaptersToVideo(record, master = null) {
       chapterId: chapter.id,
       title: chapter.title,
       text: chapter.content,
+      isZero: Boolean(chapter.is_zero),
+      sourceContentHash: chapter.content_hash,
       start_seconds: start,
       end_seconds: end,
       imageAssetId: images.get(chapter.id)?.id || null,
@@ -2323,6 +2855,9 @@ async function switchProject(projectUuid, { initial = false } = {}) {
         id: `book-chapter-${chapter.id}`,
         chapterId: chapter.id,
         title: chapter.title,
+        text: chapter.content,
+        isZero: Boolean(chapter.is_zero),
+        sourceContentHash: chapter.content_hash,
         start_seconds: 0,
         end_seconds: 0,
       }))
@@ -2395,8 +2930,9 @@ async function createBookPart() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ title: activeProjectRecord.value?.title, language: 'ru' }),
     })
-    activeProjectRecord.value = record
-    hydrateBookState(record)
+    installBookRecord(record, {
+      preserveDraft: bookVideoTextSyncState.value === 'error',
+    })
     await createBookChapter()
   } catch (error) {
     setNotice(`Не удалось создать книгу: ${error.message}`, 'error')
@@ -2413,6 +2949,7 @@ async function selectBookChapter(chapterId) {
   bookChapterTitle.value = chapter.title
   bookChapterContent.value = chapter.content
   bookSaveState.value = 'saved'
+  bookEditRevision = 0
   previewAudio.value = null
   const assets = (activeProjectRecord.value?.audio_assets || []).filter((asset) => asset.chapter_id === chapterId)
   selectedBookAudioId.value = assets.find((asset) => asset.is_active)?.id || assets[0]?.id || null
@@ -2420,56 +2957,181 @@ async function selectBookChapter(chapterId) {
 }
 
 function markBookDirty() {
+  bookEditRevision += 1
   bookSaveState.value = 'modified'
   clearTimeout(bookAutosaveTimer)
   bookAutosaveTimer = setTimeout(() => { void saveCurrentChapter({ silent: true }) }, 900)
 }
 
-async function saveCurrentChapter({ silent = false } = {}) {
-  const chapter = currentBookChapter.value
-  if (!chapter || bookSaveState.value === 'saved') return true
-  if (bookSaveState.value === 'saving') return false
-  bookSaveState.value = 'saving'
-  try {
-    const saved = await apiRequest(
-      `/projects/${encodeURIComponent(activeProjectUuid.value)}/chapters/${chapter.id}`,
-      {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title: bookChapterTitle.value, content: bookChapterContent.value }),
-      },
-    )
-    const index = activeProjectRecord.value.chapters.findIndex((item) => item.id === saved.id)
-    if (index >= 0) activeProjectRecord.value.chapters[index] = saved
-    for (const asset of activeProjectRecord.value.audio_assets || []) {
-      if (asset.chapter_id === saved.id) {
-        asset.is_stale = Boolean(asset.source_text_hash && asset.source_text_hash !== saved.content_hash)
-      }
-    }
-    bookSaveState.value = 'saved'
-    if (!silent) setNotice('Глава сохранена', 'success', 1800)
+async function syncSavedBookChapterToVideo(saved) {
+  if (!activeVideoEditionId.value) {
+    bookVideoTextSyncState.value = 'idle'
     return true
-  } catch (error) {
-    bookSaveState.value = 'error'
-    if (!silent) setNotice(`Не удалось сохранить главу: ${error.message}`, 'error')
+  }
+  let videoChapter = project.chapters.find((chapter) => Number(chapter.chapterId) === Number(saved.id))
+  if (!videoChapter) {
+    syncBookChaptersToVideo(activeProjectRecord.value)
+    videoChapter = project.chapters.find((chapter) => Number(chapter.chapterId) === Number(saved.id))
+  }
+  if (!videoChapter) {
+    bookVideoTextSyncState.value = 'error'
+    return false
+  }
+  const contentChanged = (
+    videoChapter.text !== saved.content
+    || (videoChapter.sourceContentHash && videoChapter.sourceContentHash !== saved.content_hash)
+  )
+  const invalidAudioIds = new Set()
+  for (const material of project.materials) {
+    if (contentChanged && material.role === 'book-master') invalidAudioIds.add(material.id)
+    if (
+      material.role === 'chapter-audio'
+      && Number(material.chapterId) === Number(saved.id)
+      && material.sourceTextHash !== saved.content_hash
+    ) invalidAudioIds.add(material.id)
+  }
+  if (invalidAudioIds.has(videoChapter.audioAssetId)) videoChapter.audioAssetId = null
+  if (invalidAudioIds.has(project.audioAssetId)) project.audioAssetId = null
+  if (invalidAudioIds.size) {
+    const retained = project.materials.filter((material) => !invalidAudioIds.has(material.id))
+    project.materials.splice(0, project.materials.length, ...retained)
+  }
+  videoChapter.title = saved.title
+  videoChapter.text = saved.content
+  videoChapter.isZero = Boolean(saved.is_zero)
+  videoChapter.sourceContentHash = saved.content_hash
+  dirty.value = true
+  bookVideoTextSyncState.value = 'syncing'
+  try {
+    await publishVideoCompatibility(
+      activeProjectUuid.value,
+      activeVideoEditionId.value,
+      serializeProject(),
+    )
+    dirty.value = false
+    bookVideoTextSyncState.value = 'synced'
+    return true
+  } catch {
+    bookVideoTextSyncState.value = 'error'
     return false
   }
 }
 
-async function createBookChapter() {
+async function saveCurrentChapter({ silent = false } = {}) {
+  const chapter = currentBookChapter.value
+  if (!chapter) return true
+  if (
+    bookSaveState.value === 'saved'
+    && chapter.title === bookChapterTitle.value
+    && chapter.content === bookChapterContent.value
+  ) {
+    if (bookVideoTextSyncState.value === 'error') {
+      await syncSavedBookChapterToVideo(chapter)
+    }
+    return true
+  }
+  if (bookSavePromise) return bookSavePromise
+
+  const chapterId = chapter.id
+  bookSavePromise = (async () => {
+    while (currentBookChapterId.value === chapterId) {
+      const revision = bookEditRevision
+      const title = bookChapterTitle.value
+      const content = bookChapterContent.value
+      bookSaveState.value = 'saving'
+      try {
+        const saved = await apiRequest(
+          `/projects/${encodeURIComponent(activeProjectUuid.value)}/chapters/${chapterId}`,
+          {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ title, content }),
+          },
+        )
+        const index = activeProjectRecord.value.chapters.findIndex((item) => item.id === saved.id)
+        if (index >= 0) activeProjectRecord.value.chapters[index] = saved
+        for (const asset of activeProjectRecord.value.audio_assets || []) {
+          if (asset.chapter_id === saved.id) {
+            asset.is_stale = Boolean(asset.source_text_hash && asset.source_text_hash !== saved.content_hash)
+          }
+        }
+        const unchanged = (
+          currentBookChapterId.value === chapterId
+          && bookEditRevision === revision
+          && bookChapterTitle.value === title
+          && bookChapterContent.value === content
+        )
+        if (!unchanged) {
+          bookSaveState.value = 'modified'
+          continue
+        }
+        await syncSavedBookChapterToVideo(saved)
+        if (
+          currentBookChapterId.value !== chapterId
+          ||
+          bookEditRevision !== revision
+          || bookChapterTitle.value !== title
+          || bookChapterContent.value !== content
+        ) {
+          bookSaveState.value = 'modified'
+          continue
+        }
+        bookSaveState.value = 'saved'
+        if (!silent) setNotice('Глава и текст видеоверсии сохранены', 'success', 1800)
+        return true
+      } catch (error) {
+        bookSaveState.value = 'error'
+        if (!silent) setNotice(`Не удалось сохранить главу: ${error.message}`, 'error')
+        return false
+      }
+    }
+    return true
+  })()
+  try {
+    return await bookSavePromise
+  } finally {
+    bookSavePromise = null
+  }
+}
+
+function chapterDisplayNumber(chapter) {
+  if (chapter?.is_zero) return 0
+  const regular = (activeProjectRecord.value?.chapters || []).filter((item) => !item.is_zero)
+  const index = regular.findIndex((item) => item.id === chapter?.id)
+  return index >= 0 ? index + 1 : Number(chapter?.position || 0) + 1
+}
+
+async function syncBookStructureToVideo() {
+  if (!activeVideoEditionId.value) return
+  bookVideoTextSyncState.value = 'syncing'
+  try {
+    await rebuildBookVideo(activeProjectRecord.value)
+    bookVideoTextSyncState.value = 'synced'
+  } catch {
+    syncBookChaptersToVideo(activeProjectRecord.value)
+    bookVideoTextSyncState.value = 'error'
+  }
+}
+
+async function createBookChapter({ isZero = false } = {}) {
   if (!activeProjectUuid.value) return
   if (!(await saveCurrentChapter({ silent: true }))) return
   try {
     const chapter = await apiRequest(`/projects/${encodeURIComponent(activeProjectUuid.value)}/chapters`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ title: '', content: '' }),
+      body: JSON.stringify({ title: isZero ? 'Глава 0' : '', content: '', is_zero: isZero }),
     })
-    activeProjectRecord.value.chapters.push(chapter)
+    activeProjectRecord.value = await apiRequest(`/projects/${encodeURIComponent(activeProjectUuid.value)}`)
     await selectBookChapter(chapter.id)
+    await syncBookStructureToVideo()
   } catch (error) {
     setNotice(`Не удалось создать главу: ${error.message}`, 'error')
   }
+}
+
+async function createBookZeroChapter() {
+  await createBookChapter({ isZero: true })
 }
 
 async function duplicateBookChapter() {
@@ -2484,8 +3146,9 @@ async function duplicateBookChapter() {
         content: bookChapterContent.value,
       }),
     })
-    activeProjectRecord.value.chapters.push(duplicate)
+    activeProjectRecord.value = await apiRequest(`/projects/${encodeURIComponent(activeProjectUuid.value)}`)
     await selectBookChapter(duplicate.id)
+    await syncBookStructureToVideo()
   } catch (error) {
     setNotice(`Не удалось дублировать главу: ${error.message}`, 'error')
   }
@@ -2499,6 +3162,11 @@ async function moveBookChapter(direction) {
   const reordered = [...chapters]
   const [item] = reordered.splice(index, 1)
   reordered.splice(nextIndex, 0, item)
+  await persistBookChapterOrder(reordered)
+}
+
+async function persistBookChapterOrder(reordered) {
+  if (!(await saveCurrentChapter({ silent: true }))) return false
   try {
     await apiRequest(`/projects/${encodeURIComponent(activeProjectUuid.value)}/chapters/reorder`, {
       method: 'POST',
@@ -2507,9 +3175,52 @@ async function moveBookChapter(direction) {
     })
     reordered.forEach((chapter, position) => { chapter.position = position })
     activeProjectRecord.value.chapters = reordered
+    await syncBookStructureToVideo()
+    setNotice('Порядок глав и видеоверсия обновлены', 'success', 2200)
+    return true
   } catch (error) {
     setNotice(`Не удалось изменить порядок: ${error.message}`, 'error')
+    return false
   }
+}
+
+function startBookChapterDrag(chapter, event) {
+  draggedBookChapterId.value = chapter.id
+  bookChapterDropId.value = chapter.id
+  bookChapterDropSide.value = 'before'
+  if (event.dataTransfer) {
+    event.dataTransfer.effectAllowed = 'move'
+    event.dataTransfer.setData('application/x-bookender-chapter-id', String(chapter.id))
+  }
+}
+
+function onBookChapterDragOver(chapter, event) {
+  if (!draggedBookChapterId.value || draggedBookChapterId.value === chapter.id) return
+  const rect = event.currentTarget.getBoundingClientRect()
+  bookChapterDropId.value = chapter.id
+  bookChapterDropSide.value = event.clientY < rect.top + rect.height / 2 ? 'before' : 'after'
+  if (event.dataTransfer) event.dataTransfer.dropEffect = 'move'
+}
+
+async function dropBookChapter(target) {
+  const draggedId = draggedBookChapterId.value
+  const chapters = [...(activeProjectRecord.value?.chapters || [])]
+  const from = chapters.findIndex((chapter) => chapter.id === draggedId)
+  let to = chapters.findIndex((chapter) => chapter.id === target.id)
+  const side = bookChapterDropSide.value
+  finishBookChapterDrag()
+  if (from < 0 || to < 0 || from === to) return
+  const [dragged] = chapters.splice(from, 1)
+  to = chapters.findIndex((chapter) => chapter.id === target.id)
+  if (side === 'after') to += 1
+  chapters.splice(to, 0, dragged)
+  await persistBookChapterOrder(chapters)
+}
+
+function finishBookChapterDrag() {
+  draggedBookChapterId.value = null
+  bookChapterDropId.value = null
+  bookChapterDropSide.value = 'before'
 }
 
 async function archiveBookChapter() {
@@ -2517,23 +3228,26 @@ async function archiveBookChapter() {
   if (!chapter || !window.confirm(`Удалить главу «${chapter.title}»? Она будет архивирована.`)) return
   try {
     await apiRequest(`/projects/${encodeURIComponent(activeProjectUuid.value)}/chapters/${chapter.id}`, { method: 'DELETE' })
-    activeProjectRecord.value.chapters = activeProjectRecord.value.chapters.filter((item) => item.id !== chapter.id)
+    activeProjectRecord.value = await apiRequest(`/projects/${encodeURIComponent(activeProjectUuid.value)}`)
     currentBookChapterId.value = null
     hydrateBookState(activeProjectRecord.value)
+    await syncBookStructureToVideo()
   } catch (error) {
     setNotice(`Не удалось удалить главу: ${error.message}`, 'error')
   }
 }
 
 async function saveBookMetadata() {
+  if (!(await saveCurrentChapter({ silent: true }))) return
   try {
     const record = await apiRequest(`/projects/${encodeURIComponent(activeProjectUuid.value)}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(bookMetadata),
     })
-    activeProjectRecord.value = record
-    hydrateBookState(record)
+    installBookRecord(record, {
+      preserveDraft: bookVideoTextSyncState.value === 'error',
+    })
     await loadProjectCatalog()
   } catch (error) {
     setNotice(`Не удалось сохранить метаданные: ${error.message}`, 'error')
@@ -2597,10 +3311,10 @@ function pollTtsBook() {
       ttsJobs.value = result.jobs || []
       if (!ttsJobs.value.some((job) => ['queued', 'running'].includes(job.status))) {
         clearInterval(ttsPollTimer)
+        const draftSaved = await saveCurrentChapter({ silent: true })
         const record = await apiRequest(`/projects/${encodeURIComponent(activeProjectUuid.value)}`)
-        activeProjectRecord.value = record
-        hydrateBookState(record)
-        if (activeVideoEditionId.value) {
+        installBookRecord(record, { preserveDraft: !draftSaved })
+        if (activeVideoEditionId.value && draftSaved) {
           try { await rebuildBookVideo(record) } catch { /* video can be rebuilt on next open */ }
         }
         const failed = visibleTtsJobs.value.filter((job) => job.status === 'failed').length
@@ -2626,11 +3340,11 @@ function pollTtsJob(jobUuid) {
       if (index >= 0) ttsJobs.value[index] = job
       if (!['queued', 'running'].includes(job.status)) {
         clearInterval(ttsPollTimer)
+        const draftSaved = await saveCurrentChapter({ silent: true })
         const record = await apiRequest(`/projects/${encodeURIComponent(activeProjectUuid.value)}`)
-        activeProjectRecord.value = record
-        hydrateBookState(record)
+        installBookRecord(record, { preserveDraft: !draftSaved })
         if (job.status === 'done') {
-          if (activeVideoEditionId.value) {
+          if (activeVideoEditionId.value && draftSaved) {
             try { await rebuildBookVideo(record) } catch { /* video can be rebuilt on next open */ }
           }
           const ready = record.audio_assets?.find((asset) => asset.file_path === job.output_path)
@@ -3174,7 +3888,7 @@ function onAssetInput(event) {
 }
 
 function onMusicInput(event) {
-  importFiles(event.target.files, { asMusic: true })
+  importFiles(event.target.files, { asMusic: true, timelineTime: currentTime.value })
   event.target.value = ''
 }
 
@@ -3234,10 +3948,12 @@ function onDrop(event) {
   importFiles(event.dataTransfer?.files)
 }
 
-function importFiles(fileList, { asMusic = false } = {}) {
+function importFiles(fileList, { asMusic = false, timelineTime = currentTime.value } = {}) {
   const files = [...(fileList || [])]
   if (!files.length) return
+  if (asMusic) ensureExplicitMusicClips()
   let accepted = 0
+  let lastMusicClip = null
   for (const file of files) {
     const type = materialType(file.name, file.type)
     if (asMusic && type !== 'audio') {
@@ -3257,8 +3973,8 @@ function importFiles(fileList, { asMusic = false } = {}) {
     }
     project.materials.push(asset)
     if (asMusic) {
-      project.musicAssetId = asset.id
       project.music.enabled = true
+      lastMusicClip = addMusicClip(asset.id, timelineTime)
     } else {
       assignImportedAsset(asset)
     }
@@ -3266,6 +3982,10 @@ function importFiles(fileList, { asMusic = false } = {}) {
     if (backend.online) uploadAsset(asset)
   }
   if (accepted) {
+    if (lastMusicClip) {
+      select('music', lastMusicClip.id)
+      seekTo(lastMusicClip.start)
+    }
     dirty.value = true
     setNotice(`Добавлено файлов: ${accepted}`, 'success')
     nextTick(() => {
@@ -3312,7 +4032,7 @@ function uploadAsset(asset) {
     asset.progress = 1
     dirty.value = true
     if (asset.type === 'audio' && project.audioAssetId === asset.id) await refreshWaveform()
-    if (asset.type === 'audio' && project.musicAssetId === asset.id) {
+    if (asset.type === 'audio' && (project.musicAssetId === asset.id || project.musicClips.some((clip) => clip.assetId === asset.id))) {
       nextTick(() => {
         musicEl.value?.load()
         applyMusicMix()
@@ -3325,12 +4045,15 @@ function uploadAsset(asset) {
 function assignAsset(role, id) {
   if (role === 'music' && project.audioAssetId === id) project.audioAssetId = null
   if (role === 'audio' && project.musicAssetId === id) project.musicAssetId = null
+  if (role === 'music') ensureExplicitMusicClips()
+  if (role === 'audio') project.musicClips = project.musicClips.filter((clip) => clip.assetId !== id)
   project[`${role}AssetId`] = id
   if (role === 'music') {
     const asset = assetById(id)
     if (asset) asset.role = 'music'
     project.music.enabled = true
-    select('music')
+    const clip = addMusicClip(id, currentTime.value)
+    select('music', clip.id)
   }
   dirty.value = true
   nextTick(() => {
@@ -3351,6 +4074,7 @@ function removeAsset(id) {
     if (project[key] === id) project[key] = null
   }
   for (const scene of project.scenes) if (scene.backgroundAssetId === id) scene.backgroundAssetId = null
+  project.musicClips = project.musicClips.filter((clip) => clip.assetId !== id)
   if (asset.src?.startsWith('blob:')) {
     URL.revokeObjectURL(asset.src)
     objectUrls.delete(asset.src)
@@ -3480,7 +4204,38 @@ function layerLabel(id) {
   return ({ cover: 'Обложка', title: 'Заголовок', visualizer: 'Визуализатор', caption: 'Текст озвучки' })[id] || 'Слой'
 }
 
+function setCoverEnabled(enabled) {
+  if (!enabled && !project.backgroundAssetId && project.coverAssetId) {
+    project.backgroundAssetId = project.coverAssetId
+  }
+  if (!enabled) project.coverAssetId = null
+  if (enabled && !project.coverAssetId && project.backgroundAssetId) {
+    project.coverAssetId = project.backgroundAssetId
+  }
+  project.coverMode = enabled ? 'cover' : 'background-only'
+  project.layers.cover.visible = Boolean(enabled)
+  if (!enabled) selection.type = 'project'
+  dirty.value = true
+}
+
+function visualizerPreset(id = project.layers.visualizer.colorPreset) {
+  return (
+    VISUALIZER_COLOR_PRESETS.find((preset) => preset.id === id)
+    || VISUALIZER_COLOR_PRESETS[0]
+  )
+}
+
+function visualizerPresetGradient(preset) {
+  return `linear-gradient(90deg, ${preset.colors.join(', ')})`
+}
+
+function setVisualizerColorPreset(id) {
+  project.layers.visualizer.colorPreset = visualizerPreset(id).id
+  dirty.value = true
+}
+
 function onLayerPointerDown(id, event) {
+  if (event.button !== 0) return
   select('layer', id)
   const layer = project.layers[id]
   const rect = sceneEl.value?.getBoundingClientRect()
@@ -3499,6 +4254,40 @@ function onLayerPointerDown(id, event) {
   }
   window.addEventListener('pointermove', move)
   window.addEventListener('pointerup', up)
+}
+
+function onLayerResizePointerDown(id, axis, event) {
+  if (event.button !== 0) return
+  select('layer', id)
+  const layer = project.layers[id]
+  const rect = sceneEl.value?.getBoundingClientRect()
+  if (!layer || !rect) return
+  const start = {
+    clientX: event.clientX,
+    clientY: event.clientY,
+    width: Number(layer.w) || 5,
+    height: Number(layer.h) || 5,
+  }
+  const minimum = id === 'visualizer' ? { w: 12, h: 8 } : { w: 8, h: 8 }
+  const move = (moveEvent) => {
+    if (axis.includes('e')) {
+      const dx = (moveEvent.clientX - start.clientX) / rect.width * 100
+      layer.w = Math.max(minimum.w, Math.min(100 - layer.x, start.width + dx))
+    }
+    if (axis.includes('s')) {
+      const dy = (moveEvent.clientY - start.clientY) / rect.height * 100
+      layer.h = Math.max(minimum.h, Math.min(100 - layer.y, start.height + dy))
+    }
+    dirty.value = true
+  }
+  const up = () => {
+    window.removeEventListener('pointermove', move)
+    window.removeEventListener('pointerup', up)
+    window.removeEventListener('pointercancel', up)
+  }
+  window.addEventListener('pointermove', move)
+  window.addEventListener('pointerup', up)
+  window.addEventListener('pointercancel', up)
 }
 
 function resetLayer(id) {
@@ -3537,6 +4326,7 @@ function chapterEnd(id) {
 function updateChapterStart(chapter, value) {
   chapter.start_seconds = Math.max(0, Math.min(parseTimecode(value), Math.max(0, duration.value - 0.1)))
   project.chapters.sort((a, b) => a.start_seconds - b.start_seconds)
+  syncChapterBoundMusicClips()
   dirty.value = true
 }
 
@@ -3554,6 +4344,7 @@ function removeChapter(id) {
   const index = project.chapters.findIndex((item) => item.id === id)
   if (index < 0) return
   project.chapters.splice(index, 1)
+  syncChapterBoundMusicClips()
   select('project')
   dirty.value = true
 }
@@ -3709,10 +4500,14 @@ function secondaryElement() {
 
 function musicTimeAt(absoluteTime) {
   const music = musicEl.value
+  const clip = activeMusicClip.value || selectedMusicClip.value || musicPlaybackClip.value
+  const clipTime = clip
+    ? Math.max(0, Number(clip.sourceOffset) || 0) + Math.max(0, absoluteTime - Number(clip.start))
+    : Math.max(0, absoluteTime)
   const musicDuration = Number(music?.duration)
-  if (!Number.isFinite(musicDuration) || musicDuration <= 0) return Math.max(0, absoluteTime)
-  if (project.music.loop) return Math.max(0, absoluteTime) % musicDuration
-  return Math.min(Math.max(0, absoluteTime), Math.max(0, musicDuration - 0.02))
+  if (!Number.isFinite(musicDuration) || musicDuration <= 0) return clipTime
+  if (project.music.loop) return clipTime % musicDuration
+  return Math.min(clipTime, Math.max(0, musicDuration - 0.02))
 }
 
 async function ensureMusicGraph() {
@@ -3765,8 +4560,11 @@ async function ensureMusicGraph() {
 
 function applyMusicMix() {
   const element = musicEl.value
-  const enabled = !!project.music.enabled && !!musicSource.value
-  const level = enabled ? Math.max(0, Math.min(1, Number(project.music.volume) || 0)) : 0
+  const clip = musicPlaybackClip.value
+  const enabled = !!project.music.enabled && clip?.enabled !== false && !!musicSource.value
+  const rawClipVolume = Number(clip?.volume)
+  const clipVolume = Math.max(0, Math.min(2, Number.isFinite(rawClipVolume) ? rawClipVolume : 1))
+  const level = enabled ? Math.max(0, Math.min(1, (Number(project.music.volume) || 0) * clipVolume)) : 0
   const now = musicAudioContext?.currentTime || 0
 
   function setAudioValue(parameter, value) {
@@ -3798,7 +4596,11 @@ async function onMusicControlInput(activateEq = false) {
 
 async function startMusicPreview(absoluteTime) {
   const element = musicEl.value
-  if (!element || !musicSource.value || !project.music.enabled) return
+  const clip = activeMusicClip.value || musicPlaybackClip.value
+  if (!element || !musicSource.value || !project.music.enabled || !clip) {
+    element?.pause()
+    return
+  }
   const target = musicTimeAt(absoluteTime)
   if (Math.abs((element.currentTime || 0) - target) > 0.08) {
     try { element.currentTime = target } catch { /* metadata not ready */ }
@@ -3817,6 +4619,10 @@ async function toggleMusicPreview() {
   if (!element.paused) {
     element.pause()
     return
+  }
+  if (selectedMusicClip.value && activeMusicClip.value?.id !== selectedMusicClip.value.id) {
+    seekTo(selectedMusicClip.value.start)
+    await nextTick()
   }
   audioEl.value?.pause()
   videoEl.value?.pause()
@@ -3842,6 +4648,7 @@ function onMusicMetadata() {
     try { element.currentTime = musicTimeAt(currentTime.value) } catch { /* metadata not ready */ }
   }
   applyMusicMix()
+  if (playing.value && activeMusicClip.value) element?.play().catch(() => {})
 }
 
 function onMusicError() {
@@ -4058,7 +4865,11 @@ function onMediaTime(kind) {
   if (secondary && Math.abs(secondary.currentTime - secondaryTarget) > 0.22) secondary.currentTime = secondaryTarget
   const music = musicEl.value
   const musicTarget = musicTimeAt(master.currentTime)
-  if (music && project.music.enabled && Math.abs(music.currentTime - musicTarget) > 0.28) music.currentTime = musicTarget
+  if (music && activeMusicClip.value && project.music.enabled && Math.abs(music.currentTime - musicTarget) > 0.28) {
+    music.currentTime = musicTarget
+  } else if (music && !activeMusicClip.value) {
+    music.pause()
+  }
 }
 
 function onMediaPlay(kind) {
@@ -4123,6 +4934,327 @@ function timelineTimeFromPointer(event) {
   return fraction * duration.value
 }
 
+function timelineSnapCandidates(excludeTimes = []) {
+  const excluded = (value) => excludeTimes.some((time) => Math.abs(Number(time) - value) < 0.001)
+  const candidates = []
+  const add = (time, label, priority) => {
+    const value = Number(time)
+    if (!Number.isFinite(value) || value < 0 || value > duration.value || excluded(value)) return
+    candidates.push({ time: value, label, priority })
+  }
+  const step = timelineGridStep.value
+  const gridCount = Math.min(1600, Math.ceil(duration.value / Math.max(step, 0.001)))
+  for (let index = 0; index <= gridCount; index += 1) add(index * step, `Сетка · ${formatTime(index * step, true)}`, 1)
+  add(0, 'Начало проекта', 6)
+  add(duration.value, 'Конец проекта', 6)
+  add(currentTime.value, `Курсор · ${formatTime(currentTime.value, true)}`, 3)
+  for (const scene of project.scenes) {
+    add(scene.start, `Сцена · ${scene.name}`, 2)
+    add(scene.end, `Сцена · ${scene.name}`, 2)
+  }
+  for (const clip of displayMusicClips.value) {
+    add(clip.start, `Музыка · ${assetById(clip.assetId)?.name || 'клип'}`, 2)
+    add(clip.end, `Музыка · ${assetById(clip.assetId)?.name || 'клип'}`, 2)
+  }
+  for (const chapter of timelineChapters.value) {
+    add(chapter.start_seconds, `Глава · ${chapter.title}`, 7)
+    add(chapter.end_seconds, `Глава · ${chapter.title}`, 7)
+  }
+  return candidates
+}
+
+function findTimelineSnap(value, { excludeTimes = [] } = {}) {
+  const bounded = Math.max(0, Math.min(Number(value) || 0, duration.value || Number(value) || 0))
+  if (!timelineSnap.value) return { time: bounded, snapped: false, distance: Infinity, priority: 0, label: '' }
+  const rect = timelineContent.value?.getBoundingClientRect()
+  const tolerance = rect?.width ? Math.max(0.025, duration.value * 11 / rect.width) : 0.15
+  let result = { time: bounded, snapped: false, distance: tolerance, priority: 0, label: '' }
+  for (const candidate of timelineSnapCandidates(excludeTimes)) {
+    const distance = Math.abs(candidate.time - bounded)
+    if (
+      distance < result.distance - 0.0001
+      || (Math.abs(distance - result.distance) <= 0.0001 && candidate.priority > result.priority)
+    ) {
+      result = { ...candidate, snapped: true, distance }
+    }
+  }
+  return result
+}
+
+function showTimelineSnap(result) {
+  if (!result?.snapped) {
+    snapGuideTime.value = null
+    snapGuideLabel.value = ''
+    return
+  }
+  snapGuideTime.value = result.time
+  snapGuideLabel.value = result.label
+}
+
+function snapTimelineTime(value, options = {}) {
+  const result = findTimelineSnap(value, options)
+  showTimelineSnap(result)
+  return result.time
+}
+
+function startSceneClipPointer(event, scene, mode = 'move') {
+  if (event.button !== 0) return
+  event.preventDefault()
+  select('scene', scene.id)
+  removeTimelinePointerListeners()
+  const rect = timelineContent.value?.getBoundingClientRect()
+  if (!rect?.width || !duration.value) return
+  const originX = event.clientX
+  const original = { start: Number(scene.start), end: Number(scene.end) }
+  const length = original.end - original.start
+  let moved = false
+  timelinePointerMove = (moveEvent) => {
+    moveEvent.preventDefault()
+    const delta = (moveEvent.clientX - originX) / rect.width * duration.value
+    if (Math.abs(moveEvent.clientX - originX) > 2) moved = true
+    if (mode === 'move') {
+      let nextStart = Math.max(0, Math.min(original.start + delta, Math.max(0, duration.value - length)))
+      const snappedStart = findTimelineSnap(nextStart)
+      const snappedEnd = findTimelineSnap(nextStart + length)
+      const useEnd = snappedEnd.snapped && (
+        !snappedStart.snapped
+        || snappedEnd.distance < snappedStart.distance
+        || (Math.abs(snappedEnd.distance - snappedStart.distance) < 0.0001 && snappedEnd.priority > snappedStart.priority)
+      )
+      const activeSnap = useEnd ? snappedEnd : snappedStart
+      nextStart = useEnd ? snappedEnd.time - length : snappedStart.time
+      showTimelineSnap(activeSnap)
+      scene.start = Math.max(0, Math.min(nextStart, Math.max(0, duration.value - length)))
+      scene.end = scene.start + length
+    } else if (mode === 'trim-start') {
+      scene.start = Math.min(
+        original.end - 0.1,
+        snapTimelineTime(Math.max(0, Math.min(original.start + delta, original.end - 0.1))),
+      )
+    } else {
+      scene.end = Math.max(
+        original.start + 0.1,
+        snapTimelineTime(Math.min(duration.value, original.end + delta)),
+      )
+    }
+  }
+  timelinePointerUp = () => {
+    removeTimelinePointerListeners()
+    snapGuideTime.value = null
+    snapGuideLabel.value = ''
+    if (moved) {
+      project.scenes.sort((a, b) => a.start - b.start)
+      seekTo(mode === 'trim-end' ? scene.end : scene.start)
+    }
+  }
+  window.addEventListener('pointermove', timelinePointerMove)
+  window.addEventListener('pointerup', timelinePointerUp)
+  window.addEventListener('pointercancel', timelinePointerUp)
+}
+
+function startChapterBoundaryPointer(event, chapter) {
+  if (event.button !== 0 || chapter.index <= 0) return
+  event.preventDefault()
+  const source = project.chapters.find((item) => item.id === chapter.id)
+  const sorted = [...project.chapters].sort((a, b) => a.start_seconds - b.start_seconds)
+  const index = sorted.findIndex((item) => item.id === chapter.id)
+  if (!source || index <= 0) return
+  const rect = timelineContent.value?.getBoundingClientRect()
+  if (!rect?.width || !duration.value) return
+  select('chapter', source.id)
+  removeTimelinePointerListeners()
+  const originX = event.clientX
+  const originalStart = Number(source.start_seconds)
+  const minimum = Number(sorted[index - 1].start_seconds) + 0.1
+  const maximum = Math.max(minimum, Number(sorted[index + 1]?.start_seconds ?? duration.value) - 0.1)
+  timelinePointerMove = (moveEvent) => {
+    moveEvent.preventDefault()
+    const delta = (moveEvent.clientX - originX) / rect.width * duration.value
+    const bounded = Math.max(minimum, Math.min(maximum, originalStart + delta))
+    const snapped = snapTimelineTime(bounded, { excludeTimes: [originalStart] })
+    const finalValue = Math.max(minimum, Math.min(maximum, snapped))
+    if (Math.abs(finalValue - snapped) > 0.001) showTimelineSnap(null)
+    source.start_seconds = finalValue
+    syncChapterBoundMusicClips()
+  }
+  timelinePointerUp = () => {
+    removeTimelinePointerListeners()
+    snapGuideTime.value = null
+    snapGuideLabel.value = ''
+    seekTo(source.start_seconds)
+  }
+  window.addEventListener('pointermove', timelinePointerMove)
+  window.addEventListener('pointerup', timelinePointerUp)
+  window.addEventListener('pointercancel', timelinePointerUp)
+}
+
+function startMusicClipPointer(event, sourceClip, mode = 'move') {
+  if (event.button !== 0) return
+  event.preventDefault()
+  if (event.altKey && mode === 'move') {
+    splitMusicClipAtPointer(event, sourceClip)
+    return
+  }
+  let clip = sourceClip
+  if (clip.legacy) {
+    ensureExplicitMusicClips()
+    clip = project.musicClips[0]
+  }
+  select('music', clip.id)
+  removeTimelinePointerListeners()
+  const rect = timelineContent.value?.getBoundingClientRect()
+  if (!rect?.width || !duration.value) return
+  const originX = event.clientX
+  const original = {
+    start: Number(clip.start),
+    end: Number(clip.end),
+    sourceOffset: Number(clip.sourceOffset) || 0,
+  }
+  const length = original.end - original.start
+  let moved = false
+  timelinePointerMove = (moveEvent) => {
+    moveEvent.preventDefault()
+    const delta = (moveEvent.clientX - originX) / rect.width * duration.value
+    if (Math.abs(moveEvent.clientX - originX) > 2) {
+      moved = true
+      clip.chapterId = null
+      clip.chapterBound = false
+    }
+    if (mode === 'move') {
+      let nextStart = Math.max(0, Math.min(original.start + delta, Math.max(0, duration.value - length)))
+      const snappedStart = findTimelineSnap(nextStart)
+      const snappedEnd = findTimelineSnap(nextStart + length)
+      const useEnd = snappedEnd.snapped && (
+        !snappedStart.snapped
+        || snappedEnd.distance < snappedStart.distance
+        || (Math.abs(snappedEnd.distance - snappedStart.distance) < 0.0001 && snappedEnd.priority > snappedStart.priority)
+      )
+      const activeSnap = useEnd ? snappedEnd : snappedStart
+      if (useEnd) {
+        nextStart = snappedEnd.time - length
+      } else {
+        nextStart = snappedStart.time
+      }
+      showTimelineSnap(activeSnap)
+      clip.start = Math.max(0, Math.min(nextStart, Math.max(0, duration.value - length)))
+      clip.end = clip.start + length
+    } else if (mode === 'trim-start') {
+      const earliestStart = Math.max(0, original.start - original.sourceOffset)
+      const nextStart = snapTimelineTime(
+        Math.max(earliestStart, Math.min(original.start + delta, original.end - 0.05)),
+      )
+      clip.start = Math.min(nextStart, original.end - 0.05)
+      clip.sourceOffset = Math.max(0, original.sourceOffset + clip.start - original.start)
+    } else {
+      clip.end = Math.max(
+        original.start + 0.05,
+        snapTimelineTime(
+          Math.min(duration.value, original.end + delta),
+        ),
+      )
+    }
+  }
+  timelinePointerUp = () => {
+    removeTimelinePointerListeners()
+    snapGuideTime.value = null
+    snapGuideLabel.value = ''
+    if (moved) {
+      bindMusicClipToMatchingChapter(clip)
+      seekTo(mode === 'trim-end' ? clip.end : clip.start)
+      scrollTimelineToTime(currentTime.value, 'auto')
+    }
+  }
+  window.addEventListener('pointermove', timelinePointerMove)
+  window.addEventListener('pointerup', timelinePointerUp)
+  window.addEventListener('pointercancel', timelinePointerUp)
+}
+
+function onTimelineWheel(event) {
+  const scroller = timelineScroll.value
+  if (!scroller) return
+  if (event.ctrlKey || event.metaKey) {
+    event.preventDefault()
+    const rect = scroller.getBoundingClientRect()
+    const pointerX = event.clientX - rect.left
+    const oldWidth = Math.max(1, scroller.scrollWidth - 128)
+    const timelineX = Math.max(0, scroller.scrollLeft + pointerX - 128)
+    const anchor = timelineX / oldWidth
+    timelineZoom.value = Math.max(1, Math.min(12, timelineZoom.value * Math.exp(-event.deltaY * 0.0025)))
+    nextTick(() => {
+      const newWidth = Math.max(1, scroller.scrollWidth - 128)
+      scroller.scrollLeft = Math.max(0, anchor * newWidth - pointerX + 128)
+    })
+    return
+  }
+  if (event.shiftKey) {
+    event.preventDefault()
+    scroller.scrollLeft += event.deltaY + event.deltaX
+  }
+}
+
+function removeTimelinePanListeners() {
+  if (timelinePanMove) window.removeEventListener('pointermove', timelinePanMove)
+  if (timelinePanUp) {
+    window.removeEventListener('pointerup', timelinePanUp)
+    window.removeEventListener('pointercancel', timelinePanUp)
+  }
+  timelinePanMove = null
+  timelinePanUp = null
+}
+
+function startTimelinePan(event) {
+  if (event.button !== 1 || !timelineScroll.value) return
+  event.preventDefault()
+  const scroller = timelineScroll.value
+  const origin = { x: event.clientX, y: event.clientY, left: scroller.scrollLeft, top: scroller.scrollTop }
+  scroller.classList.add('panning')
+  timelinePanMove = (moveEvent) => {
+    moveEvent.preventDefault()
+    scroller.scrollLeft = origin.left - (moveEvent.clientX - origin.x)
+    scroller.scrollTop = origin.top - (moveEvent.clientY - origin.y)
+  }
+  timelinePanUp = () => {
+    scroller.classList.remove('panning')
+    removeTimelinePanListeners()
+  }
+  window.addEventListener('pointermove', timelinePanMove)
+  window.addEventListener('pointerup', timelinePanUp)
+  window.addEventListener('pointercancel', timelinePanUp)
+}
+
+function removeTimelineResizeListeners() {
+  if (timelineResizeMove) window.removeEventListener('pointermove', timelineResizeMove)
+  if (timelineResizeUp) {
+    window.removeEventListener('pointerup', timelineResizeUp)
+    window.removeEventListener('pointercancel', timelineResizeUp)
+  }
+  timelineResizeMove = null
+  timelineResizeUp = null
+}
+
+function startTimelineResize(event) {
+  if (event.button !== 0) return
+  event.preventDefault()
+  document.body.classList.add('resizing-timeline')
+  timelineResizeMove = (moveEvent) => {
+    const maximum = Math.max(220, Math.round(window.innerHeight * 0.7))
+    timelineHeight.value = Math.max(160, Math.min(maximum, window.innerHeight - moveEvent.clientY))
+  }
+  timelineResizeUp = () => {
+    document.body.classList.remove('resizing-timeline')
+    localStorage.setItem('bookender.timelineHeight', String(Math.round(timelineHeight.value)))
+    removeTimelineResizeListeners()
+  }
+  window.addEventListener('pointermove', timelineResizeMove)
+  window.addEventListener('pointerup', timelineResizeUp)
+  window.addEventListener('pointercancel', timelineResizeUp)
+}
+
+function resetTimelineHeight() {
+  timelineHeight.value = 306
+  localStorage.setItem('bookender.timelineHeight', '306')
+}
+
 function removeTimelinePointerListeners() {
   if (timelinePointerMove) window.removeEventListener('pointermove', timelinePointerMove)
   if (timelinePointerUp) {
@@ -4131,6 +5263,8 @@ function removeTimelinePointerListeners() {
   }
   timelinePointerMove = null
   timelinePointerUp = null
+  snapGuideTime.value = null
+  snapGuideLabel.value = ''
 }
 
 function startTimelineScrub(event) {
@@ -4270,11 +5404,11 @@ function drawVisualizer() {
 
     const travel = Math.sin(now * 0.00035) * width * 0.28
     const gradient = context.createLinearGradient(-width * 0.35 + travel, 0, width * 1.35 + travel, 0)
-    gradient.addColorStop(0, '#ffad27')
-    gradient.addColorStop(0.28, '#d74fe8')
-    gradient.addColorStop(0.55, '#55ddcf')
-    gradient.addColorStop(0.78, '#b750da')
-    gradient.addColorStop(1, '#ffad27')
+    const preset = visualizerPreset()
+    const gradientColors = [...preset.colors, preset.colors[0]]
+    gradientColors.forEach((color, index) => {
+      gradient.addColorStop(index / Math.max(1, gradientColors.length - 1), color)
+    })
 
     const baseline = height * 0.78
     const slot = width / values.length
@@ -4283,7 +5417,7 @@ function drawVisualizer() {
 
     context.save()
     context.fillStyle = gradient
-    context.shadowColor = 'rgba(201, 73, 226, .62)'
+    context.shadowColor = preset.colors[Math.min(1, preset.colors.length - 1)]
     context.shadowBlur = 11 * ratio
     context.beginPath()
     values.forEach((value, index) => {
@@ -4484,10 +5618,24 @@ function handleKeydown(event) {
     showTextNavigator.value = false
     return
   }
-  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') {
+  const isSKey = event.code === 'KeyS' || event.key.toLowerCase() === 's'
+  const isNKey = event.code === 'KeyN' || event.key.toLowerCase() === 'n'
+  if ((event.ctrlKey || event.metaKey) && isSKey) {
     event.preventDefault()
     if (activeWorkspace.value === 'book') saveCurrentChapter()
     else saveProject()
+  } else if (activeWorkspace.value === 'video' && isNKey && !editing
+             && !showExport.value && !showTextNavigator.value) {
+    event.preventDefault()
+    toggleTimelineSnap()
+  } else if (activeWorkspace.value === 'video' && isSKey && !editing
+             && !showExport.value && !showTextNavigator.value) {
+    event.preventDefault()
+    splitSelectedMusicClip()
+  } else if (activeWorkspace.value === 'video' && (event.key === 'Delete' || event.key === 'Backspace')
+             && !editing && selectedMusicClip.value && !showExport.value && !showTextNavigator.value) {
+    event.preventDefault()
+    removeMusicClip(selectedMusicClip.value.id)
   } else if (activeWorkspace.value === 'video' && event.code === 'Space' && !editing
              && !showExport.value && !showTextNavigator.value) {
     event.preventDefault()
@@ -4579,6 +5727,9 @@ onBeforeUnmount(() => {
   window.removeEventListener('keydown', handleKeydown)
   window.removeEventListener('beforeunload', handleBeforeUnload)
   removeTimelinePointerListeners()
+  removeTimelinePanListeners()
+  removeTimelineResizeListeners()
+  document.body.classList.remove('resizing-timeline')
   stopBookPlayer()
   pauseAll()
   cancelAnimationFrame(visualFrame)

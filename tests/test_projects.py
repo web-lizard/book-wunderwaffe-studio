@@ -51,6 +51,13 @@ class ProjectRepositoryTests(unittest.TestCase):
         edition_a = self.repository.create_video_edition(project_a["uuid"])
         edition_b = self.repository.create_video_edition(project_b["uuid"])
         payload_a = edition_a["settings"]
+        self.assertEqual(payload_a["chapters"][0]["text"], "Текст только A")
+        self.assertEqual(
+            payload_a["chapters"][0]["sourceContentHash"],
+            self.repository.get_chapter(project_a["uuid"], chapter_a["id"])[
+                "content_hash"
+            ],
+        )
         payload_a["scenes"] = [{"id": "a", "name": "A", "start": 0, "end": 10}]
         self.repository.save_video_edition(
             project_a["uuid"], payload_a, edition_id=edition_a["id"]
@@ -94,6 +101,22 @@ class ProjectRepositoryTests(unittest.TestCase):
         backup = self.repository.backup_project(project["uuid"])
         self.assertTrue((backup / "project.json").is_file())
         self.assertTrue((backup / "manifest.json").is_file())
+
+    def test_chapter_zero_is_unique_and_inserted_before_regular_chapters(self) -> None:
+        project = self.repository.create_project(
+            title="Книга с прологом", create_first_chapter=True
+        )
+        second = self.repository.create_chapter(project["uuid"], title="Глава 2")
+        zero = self.repository.create_chapter(
+            project["uuid"], title="Глава 0", is_zero=True
+        )
+        restored = self.repository.get_project(project["uuid"], include_details=True)
+        self.assertEqual([item["position"] for item in restored["chapters"]], [0, 1, 2])
+        self.assertEqual(restored["chapters"][0]["id"], zero["id"])
+        self.assertTrue(restored["chapters"][0]["is_zero"])
+        self.assertEqual(restored["chapters"][2]["id"], second["id"])
+        with self.assertRaises(ValueError):
+            self.repository.create_chapter(project["uuid"], is_zero=True)
 
     def test_chapter_visual_is_project_owned_and_removable(self) -> None:
         project = self.repository.create_project(

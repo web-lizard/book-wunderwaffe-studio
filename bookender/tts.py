@@ -387,7 +387,15 @@ class TtsService:
         missing_chapter_ids: list[int] = []
         for chapter in project.get("chapters", []):
             asset = audio_by_chapter.get(int(chapter["id"]))
-            if not asset or not asset.get("file_path"):
+            if (
+                not asset
+                or not asset.get("file_path")
+                or bool(asset.get("is_stale"))
+                or (
+                    asset.get("source_text_hash")
+                    and asset.get("source_text_hash") != chapter.get("content_hash")
+                )
+            ):
                 missing_chapter_ids.append(int(chapter["id"]))
                 continue
             path = self._absolute_project_path(project, str(asset["file_path"]))

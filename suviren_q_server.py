@@ -158,6 +158,7 @@ class ProjectUpdateRequest(BaseModel):
 class ChapterCreateRequest(BaseModel):
     title: str = ""
     content: str = ""
+    is_zero: bool = False
 
 
 class ChapterUpdateRequest(BaseModel):
@@ -852,7 +853,12 @@ def get_export_inputs() -> dict[str, Any]:
     }
     selected: dict[str, Path | None] = {}
     selected_from: dict[str, str | None] = {}
+    background_only = bool(editor and editor.get("coverMode") == "background-only")
     for name, (role_key, extensions) in role_specs.items():
+        if name == "cover" and background_only:
+            selected[name] = None
+            selected_from[name] = None
+            continue
         path = editor_role_path(editor, role_key, extensions)
         if path:
             selected[name] = path
@@ -1042,10 +1048,13 @@ def probe_audio_for_export(
 
 def export_readiness_payload() -> dict[str, Any]:
     inputs = get_export_inputs()
+    project = load_editor_project() or {}
+    background_only = project.get("coverMode") == "background-only"
     missing: list[str] = []
     warnings = list(inputs["warnings"])
     errors: list[str] = []
-    for key in ("audio", "cover", "chapters"):
+    required_inputs = ("audio", "background", "chapters") if background_only else ("audio", "cover", "chapters")
+    for key in required_inputs:
         if not inputs.get(key):
             missing.append(key)
 
@@ -1131,7 +1140,6 @@ def export_readiness_payload() -> dict[str, Any]:
     if audio_probe and assets["audio"]["exists"]:
         assets["audio"]["duration"] = audio_probe.get("duration")
 
-    project = load_editor_project() or {}
     render_preset = str(project.get("renderPreset") or DEFAULT_RENDER_PRESET)
     if render_preset not in RENDER_RATE_PRESETS_KBPS:
         render_preset = DEFAULT_RENDER_PRESET
@@ -1539,7 +1547,10 @@ def create_project_chapter(
 ) -> dict[str, Any]:
     try:
         return PROJECT_REPOSITORY.create_chapter(
-            project_uuid, title=data.title, content=data.content
+            project_uuid,
+            title=data.title,
+            content=data.content,
+            is_zero=data.is_zero,
         )
     except Exception as exc:
         raise project_http_error(exc) from exc
@@ -1964,7 +1975,10 @@ def build_render_cmd(
 ) -> list[str]:
     """Build a command using only arguments supported by suviren_q.py render."""
     inputs = get_export_inputs()
-    missing = [key for key in ("audio", "cover", "chapters") if not inputs.get(key)]
+    editor_project = load_editor_project() or {}
+    background_only = editor_project.get("coverMode") == "background-only"
+    required_inputs = ("audio", "background", "chapters") if background_only else ("audio", "cover", "chapters")
+    missing = [key for key in required_inputs if not inputs.get(key)]
     if missing:
         raise HTTPException(
             status_code=400,
@@ -1973,14 +1987,13 @@ def build_render_cmd(
     BUILD_DIR.mkdir(parents=True, exist_ok=True)
     audio: Path = inputs["audio"]
     music: Path | None = inputs["music"]
-    cover: Path = inputs["cover"]
+    cover: Path | None = inputs["cover"]
     background: Path | None = inputs["background"]
     # Keep the complete chapter list even for a 60-second test. This preserves
     # previous/next chapter context and lets the in-frame progress bar use the
     # same full-project duration as the editor.
     chapters = CHAPTERS_PATH
     out = export_output_path(test_mode)
-    editor_project = load_editor_project() or {}
     editor_theme = str(editor_project.get("theme") or "amber")
     render_preset = str(editor_project.get("renderPreset") or DEFAULT_RENDER_PRESET)
     if render_preset not in RENDER_RATE_PRESETS_KBPS:
@@ -1995,7 +2008,6 @@ def build_render_cmd(
         str(MAIN_SCRIPT),
         "render",
         "--audio", str(audio),
-        "--cover", str(cover),
         "--chapters", str(chapters),
         "--out", str(out),
         "--fps", "30",
@@ -2005,6 +2017,8 @@ def build_render_cmd(
         "--style", render_style,
         "--bitrate-preset", render_preset,
     ]
+    if cover:
+        cmd += ["--cover", str(cover)]
     if EDITOR_PROJECT_PATH.is_file():
         cmd += ["--editor-project", str(EDITOR_PROJECT_PATH)]
     if music:

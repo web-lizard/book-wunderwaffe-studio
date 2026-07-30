@@ -388,34 +388,62 @@ class ProjectRepository:
         return self.get_project(project_uuid, include_details=True)
 
     def create_chapter(
-        self, project_uuid: str, *, title: str = "", content: str = ""
+        self,
+        project_uuid: str,
+        *,
+        title: str = "",
+        content: str = "",
+        is_zero: bool = False,
     ) -> dict[str, Any]:
         now = utc_now()
         with self.database.transaction() as connection:
             book = self._book_for_project(connection, project_uuid)
-            position = int(
-                connection.execute(
-                    "SELECT COALESCE(MAX(position), -1)+1 FROM chapters WHERE book_id=?",
-                    (book["id"],),
-                ).fetchone()[0]
-            )
+            active = connection.execute(
+                """
+                SELECT id, position, is_zero FROM chapters
+                WHERE book_id=? AND archived_at IS NULL
+                ORDER BY position, id
+                """,
+                (book["id"],),
+            ).fetchall()
+            if is_zero and any(bool(row["is_zero"]) for row in active):
+                raise ValueError("У книги уже есть глава 0")
+            if is_zero:
+                # Temporarily move existing positions negative so inserting at
+                # zero cannot violate UNIQUE(book_id, position).
+                for index, row in enumerate(active):
+                    connection.execute(
+                        "UPDATE chapters SET position=? WHERE id=?",
+                        (-index - 1, row["id"]),
+                    )
+                position = 0
+            else:
+                position = len(active)
+            regular_number = sum(not bool(row["is_zero"]) for row in active) + 1
             cursor = connection.execute(
                 """
                 INSERT INTO chapters(
                     book_id, title, content, position, created_at, updated_at,
-                    content_hash
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    content_hash, is_zero
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     book["id"],
-                    title.strip() or f"Глава {position + 1}",
+                    title.strip() or ("Глава 0" if is_zero else f"Глава {regular_number}"),
                     content,
                     position,
                     now,
                     now,
                     content_hash(content),
+                    1 if is_zero else 0,
                 ),
             )
+            if is_zero:
+                for index, row in enumerate(active, 1):
+                    connection.execute(
+                        "UPDATE chapters SET position=? WHERE id=?",
+                        (index, row["id"]),
+                    )
             self._touch_project(connection, book["project_id"], now)
             chapter_id = int(cursor.lastrowid)
         return self.get_chapter(project_uuid, chapter_id)
@@ -870,6 +898,9 @@ class ProjectRepository:
                 "id": f"chapter-{chapter['id']}",
                 "chapterId": chapter["id"],
                 "title": chapter["title"],
+                "text": chapter["content"],
+                "isZero": bool(chapter.get("is_zero")),
+                "sourceContentHash": chapter["content_hash"],
                 # Until narration duration is known, keep a valid provisional
                 # one-second slot. The video editor can retime it later.
                 "start_seconds": index,
@@ -905,6 +936,7 @@ class ProjectRepository:
                 duplicate["uuid"],
                 title=chapter["title"],
                 content=chapter["content"],
+                is_zero=bool(chapter.get("is_zero")),
             )
         for edition in source.get("video_editions", []):
             self.save_video_edition(duplicate["uuid"], edition["settings"])
