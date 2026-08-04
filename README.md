@@ -4,7 +4,9 @@
   <img src="assets/bookender-studio-icon.png" width="180" alt="Book Wunderwaffe Studio icon" />
 </p>
 
-> **Local-first Audiobook Production Suite** — превращает мастер-аудио и разметку глав в аккуратный, готовый к публикации видеорелиз.
+> **Локальная студия для создания книг, озвучки и видеокниг** — от текста и
+> разметки глав до готового ролика с обложкой, субтитрами, визуализацией звука
+> и единым мастер-аудио.
 
 ![Version](https://img.shields.io/badge/version-3.0.0-c479ff?style=flat-square)
 ![Platform](https://img.shields.io/badge/platform-Windows-4b8bbe?style=flat-square)
@@ -12,10 +14,17 @@
 ![FastAPI](https://img.shields.io/badge/FastAPI-local-009688?style=flat-square)
 ![FFmpeg](https://img.shields.io/badge/FFmpeg-GPU%20%2F%20CPU-5cb85c?style=flat-square)
 
-Book Wunderwaffe Studio — локальная многопроектная desktop-экосистема для написания
-книг, озвучивания глав и сборки видеокниг. Вкладка «Книга» хранит текст,
-главы и TTS в SQLite; вкладка «Видео» сохраняет отдельные media, сцены и
-timeline каждого проекта и использует проверенный FFmpeg renderer.
+Book Wunderwaffe Studio — бесплатное локальное Windows-приложение для авторов,
+дикторов и небольших издательских команд. В едином рабочем пространстве можно
+писать и редактировать книгу, делить её на главы, создавать несколько версий
+озвучки, собирать монтаж на таймлайне и экспортировать готовую видеокнигу.
+
+Программа не требует облачного аккаунта или подписки: проекты, тексты, настройки
+и медиаматериалы остаются на компьютере пользователя. Вкладка «Книга» хранит
+текст, главы и версии TTS в SQLite, а вкладка «Видео» ведёт независимые наборы
+медиафайлов, сцен и монтажных данных для каждого проекта. Финальная композиция
+собирается через FFmpeg с поддержкой аппаратного кодирования NVIDIA, AMD и Intel
+и автоматическим переходом на CPU, если GPU-кодировщик недоступен.
 
 Рабочая база находится в `user_data/bookender.db`, пользовательские файлы —
 в `user_data/projects/<uuid>`. Legacy-книги импортируются идемпотентно:
@@ -29,7 +38,8 @@ python book_wunderwaffe_desktop.py
 [BOOKENDER_PROJECT_ARCHITECTURE.md](BOOKENDER_PROJECT_ARCHITECTURE.md) и
 [LEGACY_IMPORT_REPORT.md](LEGACY_IMPORT_REPORT.md).
 
-Без облака, подписки и ручной сборки десятков или сотен глав.
+Главная задача приложения — убрать ручную сборку десятков или сотен глав и дать
+автору воспроизводимый путь от рукописи и мастер-аудио до публикационного MP4.
 
 ## Что умеет
 
@@ -54,8 +64,8 @@ python book_wunderwaffe_desktop.py
 Нужны Python 3.10+, Node.js `^20.19.0` или `>=22.12.0`, npm и FFmpeg в `PATH`.
 
 ```powershell
-git clone https://github.com/web-lizard/suviren_q.git
-cd suviren_q
+git clone https://github.com/web-lizard/book-wunderwaffe-studio.git
+cd book-wunderwaffe-studio
 
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
