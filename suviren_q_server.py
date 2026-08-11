@@ -188,6 +188,10 @@ class AudioAssetUpdateRequest(BaseModel):
     is_active: bool | None = None
 
 
+class ChapterAudioExportRequest(BaseModel):
+    editor_project: dict[str, Any] | None = None
+
+
 class VideoEditionCreateRequest(BaseModel):
     title: str | None = None
 
@@ -287,6 +291,34 @@ def format_timestamp(seconds: float) -> str:
     minutes, remainder = divmod(remainder, 60_000)
     secs, millis = divmod(remainder, 1000)
     return f"{hours:02d}:{minutes:02d}:{secs:02d}.{millis:03d}"
+
+
+def chapter_source_bounds(chapter: dict[str, Any]) -> tuple[float, float]:
+    timeline_start = float(chapter.get("start_seconds", 0.0) or 0.0)
+    timeline_end = float(chapter.get("end_seconds", timeline_start) or timeline_start)
+    source_start = parse_seconds(
+        chapter.get("sourceStartSeconds", chapter.get("source_start_seconds"))
+    )
+    source_end = parse_seconds(
+        chapter.get("sourceEndSeconds", chapter.get("source_end_seconds"))
+    )
+    return (
+        timeline_start if source_start is None else float(source_start),
+        timeline_end if source_end is None else float(source_end),
+    )
+
+
+def chapters_have_time_stretch(chapters: list[dict[str, Any]]) -> bool:
+    for chapter in chapters:
+        timeline_start = float(chapter.get("start_seconds", 0.0) or 0.0)
+        timeline_end = float(chapter.get("end_seconds", timeline_start) or timeline_start)
+        source_start, source_end = chapter_source_bounds(chapter)
+        if (
+            abs(source_start - timeline_start) > 0.001
+            or abs(source_end - timeline_end) > 0.001
+        ):
+            return True
+    return False
 
 
 def normalize_editor_chapters(
@@ -1079,6 +1111,7 @@ def export_readiness_payload() -> dict[str, Any]:
     if audio_probe and audio_probe["ok"] and inputs["chapter_items"]:
         audio_duration = float(audio_probe["duration"])
         ordered_chapters = sorted(inputs["chapter_items"], key=lambda item: float(item["start_seconds"]))
+        time_stretch_active = chapters_have_time_stretch(ordered_chapters)
         first_chapter_start = float(ordered_chapters[0]["start_seconds"])
         if first_chapter_start > 0.25:
             missing.append("chapters-start-after-audio")
@@ -1100,20 +1133,28 @@ def export_readiness_payload() -> dict[str, Any]:
                     f"Chapter overlap of {abs(gap):.1f}s before {current['title']}"
                 )
                 break
-        last_chapter_end = max(
-            float(chapter["end_seconds"]) for chapter in inputs["chapter_items"]
-        )
-        duration_delta = audio_duration - last_chapter_end
-        if last_chapter_end > audio_duration + 5.0:
+        audio_bounds = [
+            chapter_source_bounds(chapter) if time_stretch_active
+            else (float(chapter["start_seconds"]), float(chapter["end_seconds"]))
+            for chapter in ordered_chapters
+        ]
+        for previous, current in zip(audio_bounds, audio_bounds[1:]):
+            if abs(current[0] - previous[1]) > 0.25:
+                missing.append("chapters-source-discontinuous")
+                errors.append("Source audio ranges are not continuous after chapter time-stretch")
+                break
+        last_audio_end = max(bounds[1] for bounds in audio_bounds)
+        duration_delta = audio_duration - last_audio_end
+        if last_audio_end > audio_duration + 5.0:
             missing.append("chapters-outside-audio")
             errors.append(
-                f"Chapters end at {format_timestamp(last_chapter_end)}, "
+                f"Chapter source ends at {format_timestamp(last_audio_end)}, "
                 f"but audio ends at {format_timestamp(audio_duration)}"
             )
         elif duration_delta > 5.0:
             message = (
                 f"Chapters end {duration_delta:.1f}s before the audio "
-                f"({format_timestamp(last_chapter_end)} vs {format_timestamp(audio_duration)})"
+                f"({format_timestamp(last_audio_end)} vs {format_timestamp(audio_duration)})"
             )
             missing.append("chapters-duration-mismatch")
             errors.append(message + "; extend or refresh the chapter map")
@@ -1144,7 +1185,13 @@ def export_readiness_payload() -> dict[str, Any]:
     if render_preset not in RENDER_RATE_PRESETS_KBPS:
         render_preset = DEFAULT_RENDER_PRESET
     video_kbps, audio_kbps = RENDER_RATE_PRESETS_KBPS[render_preset]
-    render_duration = float((audio_probe or {}).get("duration") or 0.0)
+    chapter_items = inputs.get("chapter_items") or []
+    time_stretch_active = chapters_have_time_stretch(chapter_items)
+    render_duration = (
+        max((float(item.get("end_seconds") or 0.0) for item in chapter_items), default=0.0)
+        if time_stretch_active
+        else float((audio_probe or {}).get("duration") or 0.0)
+    )
     BUILD_DIR.mkdir(parents=True, exist_ok=True)
     free_bytes = int(shutil.disk_usage(BUILD_DIR).free)
 
@@ -1189,6 +1236,7 @@ def export_readiness_payload() -> dict[str, Any]:
             "pillow": pillow_version,
         },
         "audioProbe": audio_probe,
+        "timeStretchActive": time_stretch_active,
         "renderEstimate": render_estimate,
     }
 
@@ -1395,6 +1443,177 @@ def create_book_export(
     return output, "application/zip"
 
 
+def select_chapter_audio_asset(
+    project: dict[str, Any], chapter_id: int
+) -> dict[str, Any] | None:
+    candidates = [
+        asset
+        for asset in project.get("audio_assets") or []
+        if int(asset.get("chapter_id") or 0) == chapter_id
+        and asset.get("generation_status") in {None, "ready"}
+    ]
+    return max(
+        candidates,
+        key=lambda asset: (
+            int(bool(asset.get("is_active"))),
+            int(asset.get("version_number") or 0),
+            int(asset.get("id") or 0),
+        ),
+        default=None,
+    )
+
+
+def latest_editor_project(project_uuid: str) -> dict[str, Any]:
+    try:
+        edition = PROJECT_REPOSITORY.get_video_edition(project_uuid)
+    except ProjectNotFoundError:
+        return {}
+    settings = edition.get("settings")
+    return settings if isinstance(settings, dict) else {}
+
+
+def create_chapter_audio_export(
+    project_uuid: str,
+    chapter_id: int,
+    *,
+    editor_project: dict[str, Any] | None = None,
+) -> Path:
+    """Render one existing TTS chapter through the regular video audio mix."""
+    from suviren_q import load_editor_music_clips, render_audio_master
+
+    project = PROJECT_REPOSITORY.get_project(project_uuid, include_details=True)
+    chapters = project.get("chapters") or []
+    chapter = next(
+        (item for item in chapters if int(item.get("id") or 0) == chapter_id),
+        None,
+    )
+    if chapter is None:
+        raise ValueError("Выбранная глава не найдена.")
+    audio_asset = select_chapter_audio_asset(project, chapter_id)
+    if audio_asset is None:
+        raise ValueError("У этой главы пока нет готовой озвучки.")
+    audio_path = project_export_media_path(project, audio_asset.get("file_path"))
+    if audio_path is None:
+        raise ValueError("Файл озвучки главы не найден.")
+    if not shutil.which("ffmpeg"):
+        raise ValueError("FFmpeg не найден: экспорт аудио временно недоступен.")
+    source_duration = float(
+        audio_asset.get("duration") or TTS_SERVICE._audio_duration(audio_path) or 0
+    )
+    if source_duration <= 0:
+        raise ValueError("Не удалось определить длительность озвучки главы.")
+
+    editor = editor_project if isinstance(editor_project, dict) else latest_editor_project(project_uuid)
+    editor_chapter = next(
+        (
+            item
+            for item in editor.get("chapters", [])
+            if isinstance(item, dict)
+            and int(item.get("chapterId") or 0) == chapter_id
+        ),
+        None,
+    )
+    start = 0.0
+    duration = source_duration
+    narration_chapters: list[dict[str, Any]] = []
+    if editor_chapter:
+        try:
+            editor_start = max(0.0, float(editor_chapter.get("start_seconds") or 0))
+            editor_end = float(editor_chapter.get("end_seconds") or editor_start)
+        except (TypeError, ValueError):
+            editor_start = 0.0
+            editor_end = 0.0
+        start = editor_start
+        editor_duration = editor_end - editor_start
+        implied_playback_rate = (
+            source_duration / editor_duration if editor_duration > 0.05 else 0.0
+        )
+        has_audio_timing = bool(
+            editor_chapter.get("audioAssetId")
+            or editor_chapter.get("sourceEndSeconds") is not None
+        )
+        if has_audio_timing and 0.25 <= implied_playback_rate <= 8.0:
+            duration = editor_duration
+        if duration > 0.05:
+            narration_chapters = [
+                {
+                    "start_seconds": start,
+                    "end_seconds": start + duration,
+                    "sourceStartSeconds": 0.0,
+                    "sourceEndSeconds": source_duration,
+                }
+            ]
+
+    music_config = (
+        dict(editor.get("music") or {})
+        if isinstance(editor.get("music"), dict)
+        else {}
+    )
+    music_clips = load_editor_music_clips(
+        editor,
+        None,
+        path_resolver=resolve_editor_server_path,
+    )
+    legacy_music = None
+    if music_clips is None:
+        music_asset_id = editor.get("musicAssetId")
+        music_material = next(
+            (
+                item
+                for item in editor.get("materials", [])
+                if isinstance(item, dict)
+                and str(item.get("id")) == str(music_asset_id)
+            ),
+            None,
+        )
+        legacy_music = resolve_editor_server_path(
+            music_material.get("serverPath") if music_material else None
+        )
+
+    preset = str(editor.get("renderPreset") or DEFAULT_RENDER_PRESET)
+    if preset not in RENDER_RATE_PRESETS_KBPS:
+        preset = DEFAULT_RENDER_PRESET
+    # AAC video presets may go to 384 kbps; standard MP3 tops out at 320.
+    audio_bitrate = f"{min(RENDER_RATE_PRESETS_KBPS[preset][1], 320)}k"
+    position = chapters.index(chapter) + 1
+    chapter_name = safe_book_export_name(chapter.get("title"), f"Глава {position}")
+    project_root = (USER_DATA / str(project["project_folder"])).resolve()
+    export_dir = (project_root / "exports").resolve()
+    if not is_within(export_dir, project_root):
+        raise ValueError("Некорректный каталог экспорта проекта.")
+    export_dir.mkdir(parents=True, exist_ok=True)
+    output = export_dir / f"{position:02d} {chapter_name}.mp3"
+    temporary = export_dir / f".{output.stem}-{uuid.uuid4().hex}.part.mp3"
+    try:
+        render_audio_master(
+            audio_path,
+            temporary,
+            music=legacy_music,
+            music_config=music_config,
+            music_clips=music_clips,
+            narration_chapters=narration_chapters,
+            start=start,
+            duration=duration,
+            audio_bitrate=audio_bitrate,
+        )
+        if not temporary.is_file() or temporary.stat().st_size <= 0:
+            raise ValueError("FFmpeg не создал аудиофайл главы.")
+        os.replace(temporary, output)
+    except SystemExit as exc:
+        raise ValueError("FFmpeg не смог собрать аудиофайл главы.") from exc
+    finally:
+        temporary.unlink(missing_ok=True)
+    log_event(
+        "chapter_audio_exported",
+        project_uuid=project_uuid,
+        chapter_id=chapter_id,
+        audio_asset_id=int(audio_asset["id"]),
+        music_clip_count=len(music_clips or []),
+        output_path=str(output),
+    )
+    return output
+
+
 @app.get("/api/health")
 def health() -> dict[str, Any]:
     return {
@@ -1521,6 +1740,27 @@ def export_bookender_project(
         return FileResponse(
             str(output),
             media_type=media_type,
+            filename=output.name,
+        )
+    except Exception as exc:
+        raise project_http_error(exc) from exc
+
+
+@app.post("/api/projects/{project_uuid}/chapters/{chapter_id}/audio-export")
+def export_bookender_chapter_audio(
+    project_uuid: str,
+    chapter_id: int,
+    data: ChapterAudioExportRequest,
+):
+    try:
+        output = create_chapter_audio_export(
+            project_uuid,
+            chapter_id,
+            editor_project=data.editor_project,
+        )
+        return FileResponse(
+            str(output),
+            media_type="audio/mpeg",
             filename=output.name,
         )
     except Exception as exc:
@@ -1667,6 +1907,23 @@ def list_project_tts_jobs(project_uuid: str) -> dict[str, Any]:
 def get_project_tts_job(job_uuid: str) -> dict[str, Any]:
     try:
         return TTS_SERVICE.get_job(job_uuid)
+    except Exception as exc:
+        raise project_http_error(exc) from exc
+
+
+@app.post("/api/tts-jobs/{job_uuid}/cancel")
+def cancel_project_tts_job(job_uuid: str) -> dict[str, Any]:
+    try:
+        return TTS_SERVICE.cancel_job(job_uuid)
+    except Exception as exc:
+        raise project_http_error(exc) from exc
+
+
+@app.post("/api/projects/{project_uuid}/tts/cancel")
+def cancel_all_project_tts_jobs(project_uuid: str) -> dict[str, Any]:
+    try:
+        jobs = TTS_SERVICE.cancel_project_jobs(project_uuid)
+        return {"jobs": jobs, "cancelled": len(jobs)}
     except Exception as exc:
         raise project_http_error(exc) from exc
 

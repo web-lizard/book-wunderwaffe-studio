@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import importlib.util
 import json
+import queue as queue_module
 import re
 import shutil
 import subprocess
@@ -21,6 +22,11 @@ from .repository import ProjectNotFoundError, ProjectRepository, utc_now
 
 DEFAULT_VOICE = "ru-RU-SvetlanaNeural"
 TTS_CHUNK_LIMIT = 2_400
+TTS_CONNECT_TIMEOUT_SECONDS = 12
+TTS_RECEIVE_TIMEOUT_SECONDS = 30
+TTS_RETRY_ATTEMPTS = 3
+TTS_MAX_PARALLEL_CHAPTERS = 2
+TTS_DIAGNOSTIC_LIMIT = 120
 RATE_PATTERN = re.compile(r"^[+-](?:100|[0-9]{1,2})%$")
 PITCH_PATTERN = re.compile(r"^[+-](?:[0-9]{1,3})Hz$")
 VOLUME_PATTERN = re.compile(r"^[+-](?:100|[0-9]{1,2})%$")
@@ -60,10 +66,15 @@ class TtsUnavailableError(RuntimeError):
     """Raised when the configured TTS runtime cannot be imported."""
 
 
+class TtsCancelledError(RuntimeError):
+    """Raised cooperatively when a narration job is cancelled."""
+
+
 class TtsService:
     def __init__(self, repository: ProjectRepository) -> None:
         self.repository = repository
         self._threads: dict[str, threading.Thread] = {}
+        self._cancel_events: dict[str, threading.Event] = {}
         self._lock = threading.Lock()
         self._voice_cache: tuple[float, list[dict[str, Any]]] | None = None
         self._recover_interrupted_jobs()
@@ -76,10 +87,11 @@ class TtsService:
                     UPDATE tts_jobs
                     SET status='failed', progress=0, finished_at=?,
                         error='TTS worker stopped before completion',
-                        user_error='Предыдущая задача озвучки была прервана. Запустите её повторно.'
+                        user_error='Предыдущая задача озвучки была прервана. Запустите её повторно.',
+                        stage='Прервано при перезапуске', last_activity_at=?
                     WHERE status IN ('queued', 'running')
                     """,
-                    (utc_now(),),
+                    (utc_now(), utc_now()),
                 )
             if result.rowcount:
                 log_event("tts_interrupted_jobs_recovered", count=result.rowcount)
@@ -258,14 +270,32 @@ class TtsService:
             )
         ).as_posix()
         now = utc_now()
+        diagnostics = json.dumps(
+            [
+                {
+                    "timestamp": now,
+                    "level": "info",
+                    "event": "queued",
+                    "message": "Задача добавлена в очередь",
+                    "details": {
+                        "chapter_id": chapter_id,
+                        "chunks": len(self._split_text_chunks(chapter["content"])),
+                    },
+                }
+            ],
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
         with self.repository.database.transaction() as connection:
             connection.execute(
                 """
                 INSERT INTO tts_jobs(
                     uuid, project_id, chapter_id, status, provider, voice,
                     source_text_hash, output_path, created_at, job_kind, progress,
-                    progress_done, progress_total
-                ) VALUES (?, ?, ?, 'queued', ?, ?, ?, ?, ?, 'chapter', 0, 0, ?)
+                    progress_done, progress_total, stage, diagnostics_json,
+                    cancel_requested, last_activity_at
+                ) VALUES (?, ?, ?, 'queued', ?, ?, ?, ?, ?, 'chapter', 0, 0, ?,
+                    'В очереди', ?, 0, ?)
                 """,
                 (
                     job_uuid,
@@ -277,8 +307,12 @@ class TtsService:
                     relative_output,
                     now,
                     len(self._split_text_chunks(chapter["content"])),
+                    diagnostics,
+                    now,
                 ),
             )
+        with self._lock:
+            self._cancel_events[job_uuid] = threading.Event()
         if start:
             thread = threading.Thread(
                 target=self._run,
@@ -317,20 +351,35 @@ class TtsService:
         if not jobs:
             return []
         batch_id = f"batch-{uuidlib.uuid4()}"
-        thread = threading.Thread(
-            target=self._run_batch,
-            args=(batch_id, [job["uuid"] for job in jobs]),
-            name=f"bookender-tts-{batch_id[:14]}",
-            daemon=True,
-        )
+        pending: queue_module.Queue[str] = queue_module.Queue()
+        for job in jobs:
+            pending.put(job["uuid"])
+        worker_count = min(TTS_MAX_PARALLEL_CHAPTERS, len(jobs))
+        workers = []
+        for index in range(worker_count):
+            worker_key = f"{batch_id}-worker-{index + 1}"
+            workers.append(
+                (
+                    worker_key,
+                    threading.Thread(
+                        target=self._run_batch_worker,
+                        args=(worker_key, pending),
+                        name=f"bookender-tts-{batch_id[6:14]}-{index + 1}",
+                        daemon=True,
+                    ),
+                )
+            )
         with self._lock:
-            self._threads[batch_id] = thread
-        thread.start()
+            for worker_key, thread in workers:
+                self._threads[worker_key] = thread
+        for _, thread in workers:
+            thread.start()
         log_event(
             "tts_book_queued",
             batch_id=batch_id,
             project_uuid=project_uuid,
             chapter_count=len(jobs),
+            worker_count=worker_count,
         )
         return jobs
 
@@ -346,12 +395,12 @@ class TtsService:
             ).fetchone()
             if row is None:
                 raise ProjectNotFoundError(f"tts-job/{job_uuid}")
-            return dict(row)
+            return self._job_payload(dict(row))
 
     def list_jobs(self, project_uuid: str) -> list[dict[str, Any]]:
         with self.repository.database.connect() as connection:
             return [
-                dict(row)
+                self._job_payload(dict(row))
                 for row in connection.execute(
                     """
                     SELECT j.* FROM tts_jobs j
@@ -361,6 +410,134 @@ class TtsService:
                     (project_uuid,),
                 ).fetchall()
             ]
+
+    def cancel_job(self, job_uuid: str) -> dict[str, Any]:
+        job = self.get_job(job_uuid)
+        if job["status"] not in {"queued", "running"}:
+            return job
+        now = utc_now()
+        event = {
+            "timestamp": now,
+            "level": "warning",
+            "event": "cancel_requested",
+            "message": "Пользователь запросил остановку",
+            "details": {},
+        }
+        diagnostics = list(job.get("diagnostics") or [])
+        diagnostics.append(event)
+        diagnostics = diagnostics[-TTS_DIAGNOSTIC_LIMIT:]
+        with self.repository.database.transaction() as connection:
+            connection.execute(
+                """
+                UPDATE tts_jobs
+                SET cancel_requested=1,
+                    status=CASE WHEN status='queued' THEN 'cancelled' ELSE status END,
+                    stage=CASE WHEN status='queued' THEN 'Отменено' ELSE 'Останавливаю…' END,
+                    diagnostics_json=?, last_activity_at=?,
+                    finished_at=CASE WHEN status='queued' THEN ? ELSE finished_at END,
+                    user_error=CASE WHEN status='queued' THEN 'Озвучивание отменено.' ELSE user_error END
+                WHERE uuid=? AND status IN ('queued', 'running')
+                """,
+                (
+                    json.dumps(diagnostics, ensure_ascii=False, separators=(",", ":")),
+                    now,
+                    now,
+                    job_uuid,
+                ),
+            )
+        with self._lock:
+            cancel_event = self._cancel_events.get(job_uuid)
+        if cancel_event is not None:
+            cancel_event.set()
+        log_event(
+            "tts_job_cancel_requested",
+            job_uuid=job_uuid,
+            project_uuid=job["project_uuid"],
+            chapter_id=job["chapter_id"],
+        )
+        return self.get_job(job_uuid)
+
+    def cancel_project_jobs(self, project_uuid: str) -> list[dict[str, Any]]:
+        active = [
+            job
+            for job in self.list_jobs(project_uuid)
+            if job["status"] in {"queued", "running"}
+        ]
+        return [self.cancel_job(job["uuid"]) for job in active]
+
+    @staticmethod
+    def _job_payload(job: dict[str, Any]) -> dict[str, Any]:
+        try:
+            diagnostics = json.loads(str(job.get("diagnostics_json") or "[]"))
+        except (TypeError, json.JSONDecodeError):
+            diagnostics = []
+        job["diagnostics"] = diagnostics if isinstance(diagnostics, list) else []
+        return job
+
+    def _append_diagnostic(
+        self,
+        job_uuid: str,
+        event: str,
+        message: str,
+        *,
+        level: str = "info",
+        stage: str | None = None,
+        **details: Any,
+    ) -> None:
+        now = utc_now()
+        with self.repository.database.transaction() as connection:
+            row = connection.execute(
+                "SELECT diagnostics_json FROM tts_jobs WHERE uuid=?", (job_uuid,)
+            ).fetchone()
+            if row is None:
+                return
+            try:
+                diagnostics = json.loads(str(row["diagnostics_json"] or "[]"))
+            except (TypeError, json.JSONDecodeError):
+                diagnostics = []
+            if not isinstance(diagnostics, list):
+                diagnostics = []
+            diagnostics.append(
+                {
+                    "timestamp": now,
+                    "level": level,
+                    "event": event,
+                    "message": message,
+                    "details": details,
+                }
+            )
+            diagnostics = diagnostics[-TTS_DIAGNOSTIC_LIMIT:]
+            connection.execute(
+                """
+                UPDATE tts_jobs
+                SET diagnostics_json=?, stage=COALESCE(?, stage), last_activity_at=?
+                WHERE uuid=?
+                """,
+                (
+                    json.dumps(diagnostics, ensure_ascii=False, separators=(",", ":")),
+                    stage,
+                    now,
+                    job_uuid,
+                ),
+            )
+        log_event(
+            f"tts_{event}",
+            job_uuid=job_uuid,
+            message=message,
+            **details,
+        )
+
+    def _cancel_requested(self, job_uuid: str) -> bool:
+        with self._lock:
+            cancel_event = self._cancel_events.get(job_uuid)
+        if cancel_event is not None:
+            return cancel_event.is_set()
+        with self.repository.database.connect() as connection:
+            row = connection.execute(
+                "SELECT cancel_requested, status FROM tts_jobs WHERE uuid=?",
+                (job_uuid,),
+            ).fetchone()
+        return bool(row and (row["cancel_requested"] or row["status"] == "cancelled"))
 
     def build_video_master(self, project_uuid: str) -> dict[str, Any]:
         project = self.repository.get_project(project_uuid, include_details=True)
@@ -433,6 +610,33 @@ class TtsService:
         for chapter, asset, _, chapter_duration in selected:
             start = cursor
             cursor += chapter_duration
+            try:
+                metadata = json.loads(str(asset.get("metadata_json") or "{}"))
+            except (TypeError, json.JSONDecodeError):
+                metadata = {}
+            relative_word_timings = (
+                metadata.get("word_timings", [])
+                if isinstance(metadata, dict)
+                else []
+            )
+            word_timings = []
+            for timing in relative_word_timings:
+                if not isinstance(timing, dict):
+                    continue
+                try:
+                    word_start = start + float(timing["start"])
+                    word_end = start + float(timing["end"])
+                except (KeyError, TypeError, ValueError):
+                    continue
+                if word_end < word_start:
+                    continue
+                word_timings.append(
+                    {
+                        "text": str(timing.get("text") or ""),
+                        "start": round(word_start, 4),
+                        "end": round(word_end, 4),
+                    }
+                )
             chapters.append(
                 {
                     "chapter_id": int(chapter["id"]),
@@ -442,6 +646,7 @@ class TtsService:
                     "start_seconds": round(start, 3),
                     "end_seconds": round(cursor, 3),
                     "duration_seconds": round(chapter_duration, 3),
+                    "word_timings": word_timings,
                 }
             )
         result = {
@@ -471,28 +676,63 @@ class TtsService:
         relative_output: str,
         version_number: int,
     ) -> None:
+        existing_job = self.get_job(job_uuid)
+        if existing_job["status"] == "cancelled" or existing_job["cancel_requested"]:
+            with self._lock:
+                self._cancel_events.pop(job_uuid, None)
+            return
         project_record = self.repository.get_project(
             project_uuid, include_details=False
         )
         output = self._absolute_project_path(project_record, relative_output)
         output.parent.mkdir(parents=True, exist_ok=True)
         with self.repository.database.transaction() as connection:
-            connection.execute(
+            started = connection.execute(
                 """
                 UPDATE tts_jobs
-                SET status='running', progress=0.02, progress_done=0, started_at=?
-                WHERE uuid=?
+                SET status='running', progress=0.02, progress_done=0, started_at=?,
+                    stage='Подготовка', last_activity_at=?
+                WHERE uuid=? AND status='queued' AND cancel_requested=0
                 """,
-                (utc_now(), job_uuid),
+                (utc_now(), utc_now(), job_uuid),
             )
+        if started.rowcount != 1:
+            with self._lock:
+                self._cancel_events.pop(job_uuid, None)
+            return
+        self._append_diagnostic(
+            job_uuid,
+            "job_started",
+            "Фоновый обработчик начал озвучивание",
+            stage="Подготовка",
+            chunks=len(self._split_text_chunks(chapter["content"])),
+        )
         try:
             last_saved_progress = 0.0
             chapter_chunk_count = len(self._split_text_chunks(chapter["content"]))
+
+            def cancel_requested() -> bool:
+                return self._cancel_requested(job_uuid)
+
+            def save_event(
+                event: str, message: str, details: dict[str, Any]
+            ) -> None:
+                level = "warning" if event in {"network_retry", "network_error"} else "info"
+                self._append_diagnostic(
+                    job_uuid,
+                    event,
+                    message,
+                    level=level,
+                    stage=message,
+                    **details,
+                )
 
             def save_progress(
                 completed: int, total: int, fraction: float
             ) -> None:
                 nonlocal last_saved_progress
+                if cancel_requested():
+                    raise TtsCancelledError("Narration cancelled")
                 progress = min(0.94, max(0.02, 0.02 + fraction * 0.92))
                 if progress < 0.94 and progress - last_saved_progress < 0.015:
                     return
@@ -501,18 +741,23 @@ class TtsService:
                     connection.execute(
                         """
                         UPDATE tts_jobs
-                        SET progress=?, progress_done=?, progress_total=?
+                        SET progress=?, progress_done=?, progress_total=?,
+                            last_activity_at=?
                         WHERE uuid=? AND status='running'
                         """,
-                        (progress, completed, max(1, total), job_uuid),
+                        (progress, completed, max(1, total), utc_now(), job_uuid),
                     )
 
-            self._synthesize(
+            word_timings = self._synthesize(
                 chapter["content"],
                 output,
                 settings,
                 progress_callback=save_progress,
-            )
+                event_callback=save_event,
+                cancel_check=cancel_requested,
+            ) or []
+            if cancel_requested():
+                raise TtsCancelledError("Narration cancelled")
             save_progress(
                 chapter_chunk_count,
                 chapter_chunk_count,
@@ -520,6 +765,14 @@ class TtsService:
             )
             duration = self._audio_duration(output)
             now = utc_now()
+            self._append_diagnostic(
+                job_uuid,
+                "job_finished",
+                "Озвучка готова",
+                stage="Сохраняю готовую версию",
+                file_size=output.stat().st_size,
+                duration=duration,
+            )
             with self.repository.database.transaction() as connection:
                 project = connection.execute(
                     "SELECT id FROM projects WHERE uuid=?", (project_uuid,)
@@ -555,7 +808,14 @@ class TtsService:
                         version_number,
                         duration,
                         output.stat().st_size,
-                        json.dumps({"provider": settings["provider"]}),
+                        json.dumps(
+                            {
+                                "provider": settings["provider"],
+                                "word_timings": word_timings,
+                            },
+                            ensure_ascii=False,
+                            separators=(",", ":"),
+                        ),
                     ),
                 )
                 connection.execute(
@@ -563,10 +823,11 @@ class TtsService:
                     UPDATE tts_jobs
                     SET status='done', progress=1,
                         progress_done=progress_total, finished_at=?,
-                        error='', user_error=''
+                        error='', user_error='', stage='Готово',
+                        last_activity_at=?
                     WHERE uuid=?
                     """,
-                    (now, job_uuid),
+                    (now, now, job_uuid),
                 )
             log_event(
                 "tts_job_finished",
@@ -577,25 +838,55 @@ class TtsService:
                 file_size=output.stat().st_size,
                 duration=duration,
             )
+        except TtsCancelledError:
+            try:
+                output.unlink(missing_ok=True)
+            except OSError:
+                pass
+            now = utc_now()
+            self._append_diagnostic(
+                job_uuid,
+                "job_cancelled",
+                "Озвучивание остановлено",
+                level="warning",
+                stage="Останавливаю…",
+            )
+            with self.repository.database.transaction() as connection:
+                connection.execute(
+                    """
+                    UPDATE tts_jobs
+                    SET status='cancelled', finished_at=?, stage='Отменено',
+                        user_error='Озвучивание отменено.', error='',
+                        cancel_requested=1, last_activity_at=?
+                    WHERE uuid=?
+                    """,
+                    (now, now, job_uuid),
+                )
         except Exception as exc:
             try:
                 output.unlink(missing_ok=True)
             except OSError:
                 pass
-            user_error = (
-                TTS_UNAVAILABLE_MESSAGE
-                if isinstance(exc, (ImportError, ModuleNotFoundError, TtsUnavailableError))
-                else TTS_FAILED_MESSAGE
+            user_error = self._user_error_for(exc)
+            now = utc_now()
+            self._append_diagnostic(
+                job_uuid,
+                "job_failed",
+                user_error,
+                level="error",
+                stage="Фиксирую ошибку",
+                exception_type=type(exc).__name__,
+                error=str(exc),
             )
             with self.repository.database.transaction() as connection:
                 connection.execute(
                     """
                     UPDATE tts_jobs
                     SET status='failed', progress=0, finished_at=?,
-                        error=?, user_error=?
+                        error=?, user_error=?, stage='Ошибка', last_activity_at=?
                     WHERE uuid=?
                     """,
-                    (utc_now(), repr(exc), user_error, job_uuid),
+                    (now, repr(exc), user_error, now, job_uuid),
                 )
             log_event(
                 "tts_job_failed",
@@ -607,17 +898,31 @@ class TtsService:
         finally:
             with self._lock:
                 self._threads.pop(job_uuid, None)
+                self._cancel_events.pop(job_uuid, None)
 
-    def _run_batch(self, batch_id: str, job_uuids: list[str]) -> None:
+    def _run_batch_worker(
+        self, worker_key: str, pending: queue_module.Queue[str]
+    ) -> None:
         try:
-            for job_uuid in job_uuids:
-                self._run_from_database(job_uuid)
+            while True:
+                try:
+                    job_uuid = pending.get_nowait()
+                except queue_module.Empty:
+                    break
+                try:
+                    self._run_from_database(job_uuid)
+                finally:
+                    pending.task_done()
         finally:
             with self._lock:
-                self._threads.pop(batch_id, None)
+                self._threads.pop(worker_key, None)
 
     def _run_from_database(self, job_uuid: str) -> None:
         job = self.get_job(job_uuid)
+        if job["status"] == "cancelled" or job["cancel_requested"]:
+            with self._lock:
+                self._cancel_events.pop(job_uuid, None)
+            return
         project = self.repository.get_project(
             job["project_uuid"], include_details=True
         )
@@ -635,6 +940,24 @@ class TtsService:
             job["output_path"],
             version_number,
         )
+
+    @staticmethod
+    def _user_error_for(exc: Exception) -> str:
+        if isinstance(exc, (ImportError, ModuleNotFoundError, TtsUnavailableError)):
+            return TTS_UNAVAILABLE_MESSAGE
+        error_name = type(exc).__name__
+        if isinstance(exc, (TimeoutError, ConnectionError, OSError)) or error_name in {
+            "NoAudioReceived",
+            "ConnectionTimeoutError",
+            "WSServerHandshakeError",
+            "ClientConnectionError",
+            "ServerDisconnectedError",
+        }:
+            return (
+                "Сервер озвучки не ответил. Проверьте интернет и VPN, "
+                "затем повторите задачу; подробности доступны в диагностике."
+            )
+        return TTS_FAILED_MESSAGE
 
     @staticmethod
     def _normalized_settings(settings: dict[str, Any]) -> dict[str, str]:
@@ -662,7 +985,9 @@ class TtsService:
         output: Path,
         settings: dict[str, str],
         progress_callback: Callable[[int, int, float], None] | None = None,
-    ) -> None:
+        event_callback: Callable[[str, str, dict[str, Any]], None] | None = None,
+        cancel_check: Callable[[], bool] | None = None,
+    ) -> list[dict[str, Any]]:
         chunks = cls._split_text_chunks(text)
         total = len(chunks)
 
@@ -672,16 +997,34 @@ class TtsService:
             overall = min(1.0, max(0.0, (completed + local_fraction) / total))
             progress_callback(completed, total, overall)
 
+        def event(name: str, message: str, **details: Any) -> None:
+            if event_callback is not None:
+                event_callback(name, message, details)
+
+        def ensure_not_cancelled() -> None:
+            if cancel_check is not None and cancel_check():
+                raise TtsCancelledError("Narration cancelled")
+
+        ensure_not_cancelled()
         report(0)
         if len(chunks) == 1:
-            cls._synthesize_chunk(
+            event("chunk_started", "Фрагмент 1 из 1: подключение", chunk=1, total=1)
+            chunk_options: dict[str, Any] = {
+                "progress_callback": lambda fraction: report(0, fraction)
+            }
+            if event_callback is not None:
+                chunk_options["event_callback"] = event_callback
+            if cancel_check is not None:
+                chunk_options["cancel_check"] = cancel_check
+            word_timings = cls._synthesize_chunk(
                 chunks[0],
                 output,
                 settings,
-                progress_callback=lambda fraction: report(0, fraction),
-            )
+                **chunk_options,
+            ) or []
+            event("chunk_finished", "Фрагмент 1 из 1 готов", chunk=1, total=1)
             report(1)
-            return
+            return word_timings
 
         ffmpeg = shutil.which("ffmpeg")
         if not ffmpeg:
@@ -692,18 +1035,58 @@ class TtsService:
             for index in range(len(chunks))
         ]
         concat_file = output.with_name(f".{output.stem}-{token}-concat.txt")
+        word_timings: list[dict[str, Any]] = []
+        audio_cursor = 0.0
         try:
             for index, (chunk, part) in enumerate(zip(chunks, parts)):
-                cls._synthesize_chunk(
+                ensure_not_cancelled()
+                event(
+                    "chunk_started",
+                    f"Фрагмент {index + 1} из {total}: подключение",
+                    chunk=index + 1,
+                    total=total,
+                )
+                chunk_options = {
+                    "progress_callback": lambda fraction, done=index: report(
+                        done, fraction
+                    )
+                }
+                if event_callback is not None:
+                    chunk_options["event_callback"] = event_callback
+                if cancel_check is not None:
+                    chunk_options["cancel_check"] = cancel_check
+                chunk_timings = cls._synthesize_chunk(
                     chunk,
                     part,
                     settings,
-                    progress_callback=lambda fraction, done=index: report(
-                        done, fraction
-                    ),
+                    **chunk_options,
+                ) or []
+                word_timings.extend(
+                    {
+                        **timing,
+                        "start": round(audio_cursor + float(timing["start"]), 4),
+                        "end": round(audio_cursor + float(timing["end"]), 4),
+                    }
+                    for timing in chunk_timings
                 )
+                part_duration = cls._audio_duration(part)
+                if not part_duration and chunk_timings:
+                    part_duration = max(
+                        float(timing.get("end") or 0) for timing in chunk_timings
+                    )
+                audio_cursor += max(0.0, float(part_duration or 0))
                 report(index + 1)
+                event(
+                    "chunk_finished",
+                    f"Фрагмент {index + 1} из {total} готов",
+                    chunk=index + 1,
+                    total=total,
+                    bytes=part.stat().st_size if part.is_file() else 0,
+                )
+            ensure_not_cancelled()
+            event("joining_audio", "Склеиваю аудиофрагменты", total=total)
             cls._concat_mp3_files(parts, output, concat_file=concat_file)
+            return word_timings
         finally:
             concat_file.unlink(missing_ok=True)
             for part in parts:
@@ -793,52 +1176,119 @@ class TtsService:
         output: Path,
         settings: dict[str, str],
         progress_callback: Callable[[float], None] | None = None,
-    ) -> None:
+        event_callback: Callable[[str, str, dict[str, Any]], None] | None = None,
+        cancel_check: Callable[[], bool] | None = None,
+    ) -> list[dict[str, Any]]:
         import edge_tts
 
-        async def stream_to_file(communicate: Any) -> None:
+        def event(name: str, message: str, **details: Any) -> None:
+            if event_callback is not None:
+                event_callback(name, message, details)
+
+        def ensure_not_cancelled() -> None:
+            if cancel_check is not None and cancel_check():
+                raise TtsCancelledError("Narration cancelled")
+
+        async def stream_to_file(communicate: Any) -> list[dict[str, Any]]:
             spoken_characters = 0
+            received_bytes = 0
+            first_audio_received = False
+            word_timings: list[dict[str, Any]] = []
             with output.open("wb") as audio:
                 async for message in communicate.stream():
+                    ensure_not_cancelled()
                     if message["type"] == "audio":
                         audio.write(message["data"])
+                        received_bytes += len(message["data"])
+                        if not first_audio_received:
+                            first_audio_received = True
+                            event(
+                                "audio_started",
+                                "Соединение установлено, получаю аудио",
+                            )
                     elif message["type"] in {"WordBoundary", "SentenceBoundary"}:
+                        if message["type"] == "WordBoundary":
+                            start = max(0.0, float(message.get("offset") or 0) / 10_000_000)
+                            boundary_duration = max(
+                                0.0,
+                                float(message.get("duration") or 0) / 10_000_000,
+                            )
+                            word_timings.append(
+                                {
+                                    "text": str(message.get("text") or ""),
+                                    "start": round(start, 4),
+                                    "end": round(start + boundary_duration, 4),
+                                }
+                            )
                         spoken_characters += len(str(message.get("text") or "")) + 1
                         if progress_callback:
                             progress_callback(
                                 min(0.97, spoken_characters / max(1, len(text)))
                             )
                 audio.flush()
+            event("audio_received", "Аудиофрагмент получен", bytes=received_bytes)
+            return word_timings
 
         last_error: Exception | None = None
-        for attempt in range(3):
+        for attempt in range(TTS_RETRY_ATTEMPTS):
+            ensure_not_cancelled()
             try:
+                event(
+                    "network_attempt",
+                    f"Подключение к TTS: попытка {attempt + 1} из {TTS_RETRY_ATTEMPTS}",
+                    attempt=attempt + 1,
+                    attempts=TTS_RETRY_ATTEMPTS,
+                    connect_timeout=TTS_CONNECT_TIMEOUT_SECONDS,
+                    receive_timeout=TTS_RECEIVE_TIMEOUT_SECONDS,
+                )
                 communicate = edge_tts.Communicate(
                     text,
                     settings["voice"],
                     rate=settings["rate"],
                     volume=settings["volume"],
                     pitch=settings["pitch"],
-                    boundary="SentenceBoundary",
+                    boundary="WordBoundary",
+                    connect_timeout=TTS_CONNECT_TIMEOUT_SECONDS,
+                    receive_timeout=TTS_RECEIVE_TIMEOUT_SECONDS,
                 )
-                asyncio.run(stream_to_file(communicate))
+                word_timings = asyncio.run(stream_to_file(communicate))
                 if output.is_file() and output.stat().st_size > 0:
                     if progress_callback:
                         progress_callback(1.0)
-                    return
+                    return word_timings
                 raise RuntimeError("TTS provider did not create an audio file")
+            except TtsCancelledError:
+                output.unlink(missing_ok=True)
+                raise
             except Exception as exc:
                 last_error = exc
                 output.unlink(missing_ok=True)
-                transient = type(exc).__name__ in {
+                transient = isinstance(exc, (TimeoutError, ConnectionError, OSError)) or type(exc).__name__ in {
                     "NoAudioReceived",
                     "ConnectionTimeoutError",
                     "WSServerHandshakeError",
                     "ClientConnectionError",
+                    "ServerDisconnectedError",
                 }
-                if not transient or attempt == 2:
+                final_attempt = attempt == TTS_RETRY_ATTEMPTS - 1
+                event(
+                    "network_error" if final_attempt or not transient else "network_retry",
+                    (
+                        "TTS не ответил; повторяю подключение"
+                        if transient and not final_attempt
+                        else "Ошибка соединения с TTS"
+                    ),
+                    attempt=attempt + 1,
+                    transient=transient,
+                    exception_type=type(exc).__name__,
+                    error=str(exc),
+                )
+                if not transient or final_attempt:
                     raise
-                time.sleep(attempt + 1)
+                deadline = time.monotonic() + attempt + 1
+                while time.monotonic() < deadline:
+                    ensure_not_cancelled()
+                    time.sleep(min(0.1, deadline - time.monotonic()))
         if last_error:
             raise last_error
 

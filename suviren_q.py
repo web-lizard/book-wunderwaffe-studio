@@ -31,7 +31,7 @@ import textwrap
 import time
 from dataclasses import dataclass, asdict
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 APP_NAME = "book-wunderwaffe-studio"
 APP_VERSION = "3.0.0"
@@ -1879,6 +1879,10 @@ def reading_caption_chunks(
     *,
     words_per_card: int = 14,
     line_width: int = 48,
+    word_timings: Optional[list[dict[str, Any]]] = None,
+    timeline_start: float = 0.0,
+    source_start: Optional[float] = None,
+    playback_rate: float = 1.0,
 ) -> list[tuple[float, float, str]]:
     words = re.findall(r"\S+", str(text or "").strip())
     if not words or duration <= 0:
@@ -1887,11 +1891,79 @@ def reading_caption_chunks(
     groups = [words[index : index + size] for index in range(0, len(words), size)]
     weights = [max(1, sum(len(word) for word in group)) for group in groups]
     total_weight = max(1, sum(weights))
-    cursor = 0.0
+    transitions = [0.0]
+    elapsed_weight = 0
+    for weight in weights[:-1]:
+        elapsed_weight += weight
+        transitions.append(duration * elapsed_weight / total_weight)
+    transitions.append(duration)
+
+    def canonical_word(value: Any) -> str:
+        return "".join(
+            character.casefold()
+            for character in str(value or "")
+            if character.isalnum()
+        )
+
+    timings = []
+    for timing in word_timings or []:
+        if not isinstance(timing, dict):
+            continue
+        try:
+            timing_start = float(timing["start"])
+            timing_end = float(timing["end"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if timing_end < timing_start:
+            continue
+        timings.append(
+            {
+                "text": str(timing.get("text") or ""),
+                "start": timing_start,
+                "end": timing_end,
+            }
+        )
+    timings.sort(key=lambda timing: timing["start"])
+    anchors: dict[int, dict[str, Any]] = {}
+    timing_index = 0
+    for word_index, word in enumerate(words):
+        source = canonical_word(word)
+        if not source:
+            continue
+        while timing_index < len(timings) and not canonical_word(timings[timing_index]["text"]):
+            timing_index += 1
+        combined = ""
+        match_end = timing_index - 1
+        for lookahead in range(timing_index, min(len(timings), timing_index + 5)):
+            combined += canonical_word(timings[lookahead]["text"])
+            if combined == source:
+                match_end = lookahead
+                break
+            if not source.startswith(combined):
+                break
+        if match_end < timing_index:
+            continue
+        anchors[word_index] = {
+            "start": timings[timing_index]["start"],
+            "end": timings[match_end]["end"],
+        }
+        timing_index = match_end + 1
+
+    for group_index in range(1, len(groups)):
+        first_word_index = group_index * size
+        anchor = anchors.get(first_word_index)
+        if anchor:
+            timing_origin = float(timeline_start if source_start is None else source_start)
+            rate = max(0.01, float(playback_rate or 1.0))
+            transitions[group_index] = max(
+                0.0,
+                min(duration, (float(anchor["start"]) - timing_origin) / rate),
+            )
+    for index in range(1, len(transitions)):
+        transitions[index] = max(transitions[index - 1], transitions[index])
+
     chunks: list[tuple[float, float, str]] = []
-    for index, (group, weight) in enumerate(zip(groups, weights)):
-        start = cursor
-        cursor = duration if index + 1 == len(groups) else cursor + duration * weight / total_weight
+    for index, group in enumerate(groups):
         wrapped = "\n".join(
             textwrap.wrap(
                 " ".join(group),
@@ -1900,7 +1972,7 @@ def reading_caption_chunks(
                 break_on_hyphens=False,
             )[:3]
         )
-        chunks.append((start, cursor, wrapped))
+        chunks.append((transitions[index], transitions[index + 1], wrapped))
     return chunks
 
 
@@ -1941,6 +2013,14 @@ def _render_segment_worker(args: dict[str, Any]) -> dict[str, Any]:
     visualizer = dict(args.get("visualizer") or {})
     captions = dict(args.get("captions") or {})
     caption_text = str(args.get("caption_text") or "")
+    caption_word_timings = args.get("caption_word_timings")
+    if not isinstance(caption_word_timings, list):
+        caption_word_timings = []
+    caption_source_start = safe_float(str(args.get("caption_source_start", start)))
+    caption_playback_rate = max(
+        0.01,
+        safe_float(str(args.get("caption_playback_rate", 1.0)), 1.0),
+    )
 
     ensure_dir(out.parent)
 
@@ -1975,6 +2055,7 @@ def _render_segment_worker(args: dict[str, Any]) -> dict[str, Any]:
             [
                 (
                     "[1:a]asetpts=PTS-STARTPTS,"
+                    f"{atempo_filter(caption_playback_rate)},"
                     "aformat=sample_fmts=fltp:channel_layouts=mono,"
                     "volume=3,alimiter=limit=0.95[reactive_audio]"
                 ),
@@ -2121,6 +2202,10 @@ def _render_segment_worker(args: dict[str, Any]) -> dict[str, Any]:
                     duration,
                     words_per_card=words_per_card,
                     line_width=caption_line_width,
+                    word_timings=caption_word_timings,
+                    timeline_start=start,
+                    source_start=caption_source_start,
+                    playback_rate=caption_playback_rate,
                 )
             ):
                 next_label = f"with_caption_{index}"
@@ -2174,8 +2259,8 @@ def _render_segment_worker(args: dict[str, Any]) -> dict[str, Any]:
             "-loop", "1",
             "-framerate", str(fps),
             "-i", str(panel),
-            "-ss", f"{start:.3f}",
-            "-t", f"{duration:.3f}",
+            "-ss", f"{caption_source_start:.6f}",
+            "-t", f"{duration * caption_playback_rate:.6f}",
             "-i", str(audio),
         ]
         if filter_complex:
@@ -2297,7 +2382,82 @@ def concat_segments(segments: list[Path], out: Path, concat_txt: Path, *, dry_ru
     run_cmd(cmd, dry_run=dry_run)
 
 
-def build_music_mix_filter(config: dict[str, Any], duration: float) -> str:
+def atempo_filter(playback_rate: float) -> str:
+    """Return a quality-safe FFmpeg atempo chain for 0.25x..8x narration."""
+    rate = max(0.25, min(8.0, float(playback_rate or 1.0)))
+    factors: list[float] = []
+    while rate > 2.0 + 1e-9:
+        factors.append(2.0)
+        rate /= 2.0
+    while rate < 0.5 - 1e-9:
+        factors.append(0.5)
+        rate /= 0.5
+    factors.append(rate)
+    return ",".join(f"atempo={factor:.8f}" for factor in factors)
+
+
+def build_narration_timeline_filter(
+    chapters: list[dict[str, Any]],
+    *,
+    start: float,
+    duration: float,
+    voice_input_index: int = 1,
+) -> Optional[str]:
+    """Cut source narration by chapter, time-stretch it, and concatenate it."""
+    render_start = max(0.0, float(start))
+    render_end = render_start + max(0.0, float(duration))
+    filters: list[str] = []
+    labels: list[str] = []
+    has_retiming = False
+    for chapter in chapters:
+        if not isinstance(chapter, dict):
+            continue
+        try:
+            timeline_start = float(chapter.get("start_seconds", chapter.get("start", 0.0)))
+            timeline_end = float(chapter.get("end_seconds", chapter.get("end", timeline_start)))
+            source_start = float(chapter.get("sourceStartSeconds", chapter.get("source_start_seconds", timeline_start)))
+            source_end = float(chapter.get("sourceEndSeconds", chapter.get("source_end_seconds", timeline_end)))
+        except (TypeError, ValueError):
+            continue
+        if timeline_end <= timeline_start or source_end <= source_start:
+            continue
+        chapter_rate = (source_end - source_start) / (timeline_end - timeline_start)
+        if (
+            abs(chapter_rate - 1.0) > 0.0005
+            or abs(source_start - timeline_start) > 0.0005
+            or abs(source_end - timeline_end) > 0.0005
+        ):
+            has_retiming = True
+        overlap_start = max(render_start, timeline_start)
+        overlap_end = min(render_end, timeline_end)
+        if overlap_end <= overlap_start + 0.001:
+            continue
+        rate = max(0.25, min(8.0, chapter_rate))
+        clip_source_start = source_start + (overlap_start - timeline_start) * rate
+        clip_source_end = source_start + (overlap_end - timeline_start) * rate
+        label = f"narration{len(labels)}"
+        filters.append(
+            f"[{voice_input_index}:a]atrim=start={clip_source_start:.6f}:end={clip_source_end:.6f},"
+            f"asetpts=PTS-STARTPTS,aresample=48000,{atempo_filter(rate)}[{label}]"
+        )
+        labels.append(f"[{label}]")
+    if not labels or not has_retiming:
+        return None
+    if len(labels) == 1:
+        filters.append(f"{labels[0]}anull[voice]")
+    else:
+        filters.append(f"{''.join(labels)}concat=n={len(labels)}:v=0:a=1[voice]")
+    return ";".join(filters)
+
+
+def build_music_mix_filter(
+    config: dict[str, Any],
+    duration: float,
+    *,
+    voice_filter: Optional[str] = None,
+    voice_input_index: int = 1,
+    music_input_index: int = 2,
+) -> str:
     """Build a conservative three-band music bed under the spoken master."""
     def bounded(key: str, default: float, minimum: float, maximum: float) -> float:
         try:
@@ -2313,8 +2473,8 @@ def build_music_mix_filter(config: dict[str, Any], duration: float) -> str:
     fade_duration = min(1.5, max(0.1, duration / 4))
     fade_out_start = max(0.0, duration - fade_duration)
     return (
-        "[1:a]aresample=48000,asetpts=PTS-STARTPTS[voice];"
-        "[2:a]aresample=48000,asetpts=PTS-STARTPTS,"
+        (voice_filter or f"[{voice_input_index}:a]aresample=48000,asetpts=PTS-STARTPTS[voice]") + ";"
+        f"[{music_input_index}:a]aresample=48000,asetpts=PTS-STARTPTS,"
         f"equalizer=f=120:t=q:w=1:g={bass:.2f},"
         f"equalizer=f=1100:t=q:w=1:g={mid:.2f},"
         f"equalizer=f=7000:t=q:w=1:g={treble:.2f},"
@@ -2330,6 +2490,10 @@ def build_music_timeline_filter(
     config: dict[str, Any],
     clips: list[dict[str, Any]],
     duration: float,
+    *,
+    voice_filter: Optional[str] = None,
+    voice_input_index: int = 1,
+    music_input_start_index: int = 2,
 ) -> str:
     """Build an FFmpeg graph for independently positioned music items."""
     def bounded(source: dict[str, Any], key: str, default: float, minimum: float, maximum: float) -> float:
@@ -2343,7 +2507,10 @@ def build_music_timeline_filter(
     bass = bounded(config, "bass", 0.0, -12.0, 12.0)
     mid = bounded(config, "mid", 0.0, -12.0, 12.0)
     treble = bounded(config, "treble", 0.0, -12.0, 12.0)
-    filters = ["[1:a]aresample=48000,asetpts=PTS-STARTPTS[voice]"]
+    filters = [
+        voice_filter
+        or f"[{voice_input_index}:a]aresample=48000,asetpts=PTS-STARTPTS[voice]"
+    ]
     labels = ["[voice]"]
     for index, clip in enumerate(clips):
         clip_duration = max(0.05, float(clip["duration"]))
@@ -2353,7 +2520,7 @@ def build_music_timeline_filter(
         fade_out_start = max(0.0, clip_duration - fade_duration)
         label = f"music{index}"
         filters.append(
-            f"[{index + 2}:a]aresample=48000,asetpts=PTS-STARTPTS,"
+            f"[{index + music_input_start_index}:a]aresample=48000,asetpts=PTS-STARTPTS,"
             f"atrim=duration={clip_duration:.6f},"
             f"equalizer=f=120:t=q:w=1:g={bass:.2f},"
             f"equalizer=f=1100:t=q:w=1:g={mid:.2f},"
@@ -2372,6 +2539,40 @@ def build_music_timeline_filter(
     return ";".join(filters)
 
 
+def prepare_music_clips(
+    music_clips: Optional[list[dict[str, Any]]],
+    config: dict[str, Any],
+    *,
+    start: float,
+    duration: float,
+) -> list[dict[str, Any]]:
+    """Trim enabled music clips to a render window without changing their mix."""
+    prepared: list[dict[str, Any]] = []
+    if music_clips is None or config.get("enabled", True) is False:
+        return prepared
+    render_end = start + duration
+    for clip in music_clips:
+        if clip.get("enabled", True) is False:
+            continue
+        clip_start = max(0.0, float(clip.get("start", 0.0)))
+        clip_end = max(clip_start, float(clip.get("end", clip_start)))
+        overlap_start = max(start, clip_start)
+        overlap_end = min(render_end, clip_end)
+        path = clip.get("path")
+        if overlap_end <= overlap_start + 0.001 or not isinstance(path, Path):
+            continue
+        prepared.append({
+            **clip,
+            "timeline_start": overlap_start - start,
+            "duration": overlap_end - overlap_start,
+            "source_offset": max(
+                0.0,
+                float(clip.get("sourceOffset", 0.0)) + overlap_start - clip_start,
+            ),
+        })
+    return prepared
+
+
 def mux_master_audio(
     video: Path,
     audio: Path,
@@ -2380,6 +2581,7 @@ def mux_master_audio(
     music: Optional[Path] = None,
     music_config: Optional[dict[str, Any]] = None,
     music_clips: Optional[list[dict[str, Any]]] = None,
+    narration_chapters: Optional[list[dict[str, Any]]] = None,
     start: float = 0.0,
     duration: float,
     audio_bitrate: str = "192k",
@@ -2387,32 +2589,23 @@ def mux_master_audio(
 ) -> None:
     """Attach narration once and optionally mix a looped, equalized music bed."""
     ensure_dir(out.parent if out.parent != Path("") else Path.cwd())
-    cmd = [
-        "ffmpeg", "-y",
-        "-i", str(video),
-        "-ss", f"{max(0.0, start):.6f}",
-        "-i", str(audio),
-    ]
+    narration_filter = build_narration_timeline_filter(
+        narration_chapters or [],
+        start=start,
+        duration=duration,
+    )
+    cmd = ["ffmpeg", "-y", "-i", str(video)]
+    if narration_filter:
+        cmd += ["-i", str(audio)]
+    else:
+        cmd += ["-ss", f"{max(0.0, start):.6f}", "-i", str(audio)]
     config = dict(music_config or {})
-    prepared_clips: list[dict[str, Any]] = []
-    if music_clips is not None and config.get("enabled", True) is not False:
-        render_end = start + duration
-        for clip in music_clips:
-            if clip.get("enabled", True) is False:
-                continue
-            clip_start = max(0.0, float(clip.get("start", 0.0)))
-            clip_end = max(clip_start, float(clip.get("end", clip_start)))
-            overlap_start = max(start, clip_start)
-            overlap_end = min(render_end, clip_end)
-            path = clip.get("path")
-            if overlap_end <= overlap_start + 0.001 or not isinstance(path, Path):
-                continue
-            prepared_clips.append({
-                **clip,
-                "timeline_start": overlap_start - start,
-                "duration": overlap_end - overlap_start,
-                "source_offset": max(0.0, float(clip.get("sourceOffset", 0.0)) + overlap_start - clip_start),
-            })
+    prepared_clips = prepare_music_clips(
+        music_clips,
+        config,
+        start=start,
+        duration=duration,
+    )
 
     if prepared_clips:
         for clip in prepared_clips:
@@ -2423,7 +2616,12 @@ def mux_master_audio(
                 "-i", str(clip["path"]),
             ]
         cmd += [
-            "-filter_complex", build_music_timeline_filter(config, prepared_clips, duration),
+            "-filter_complex", build_music_timeline_filter(
+                config,
+                prepared_clips,
+                duration,
+                voice_filter=narration_filter,
+            ),
             "-map", "0:v:0",
             "-map", "[mixed]",
         ]
@@ -2433,9 +2631,19 @@ def mux_master_audio(
         cmd += [
             "-ss", f"{max(0.0, start):.6f}",
             "-i", str(music),
-            "-filter_complex", build_music_mix_filter(config, duration),
+            "-filter_complex", build_music_mix_filter(
+                config,
+                duration,
+                voice_filter=narration_filter,
+            ),
             "-map", "0:v:0",
             "-map", "[mixed]",
+        ]
+    elif narration_filter:
+        cmd += [
+            "-filter_complex", narration_filter,
+            "-map", "0:v:0",
+            "-map", "[voice]",
         ]
     else:
         cmd += [
@@ -2450,6 +2658,86 @@ def mux_master_audio(
         "-t", f"{duration:.6f}",
         "-shortest",
         "-movflags", "+faststart",
+        str(out),
+    ]
+    run_cmd(cmd, dry_run=dry_run)
+
+
+def render_audio_master(
+    audio: Path,
+    out: Path,
+    *,
+    music: Optional[Path] = None,
+    music_config: Optional[dict[str, Any]] = None,
+    music_clips: Optional[list[dict[str, Any]]] = None,
+    narration_chapters: Optional[list[dict[str, Any]]] = None,
+    start: float = 0.0,
+    duration: float,
+    audio_bitrate: str = "192k",
+    dry_run: bool = False,
+) -> None:
+    """Render narration and the existing video music mix as an MP3-only master."""
+    ensure_dir(out.parent if out.parent != Path("") else Path.cwd())
+    narration_filter = build_narration_timeline_filter(
+        narration_chapters or [],
+        start=start,
+        duration=duration,
+        voice_input_index=0,
+    )
+    cmd = ["ffmpeg", "-y", "-i", str(audio)]
+    config = dict(music_config or {})
+    prepared_clips = prepare_music_clips(
+        music_clips,
+        config,
+        start=start,
+        duration=duration,
+    )
+    if prepared_clips:
+        for clip in prepared_clips:
+            if config.get("loop", True) is not False:
+                cmd += ["-stream_loop", "-1"]
+            cmd += [
+                "-ss", f"{float(clip['source_offset']):.6f}",
+                "-i", str(clip["path"]),
+            ]
+        cmd += [
+            "-filter_complex", build_music_timeline_filter(
+                config,
+                prepared_clips,
+                duration,
+                voice_filter=narration_filter,
+                voice_input_index=0,
+                music_input_start_index=1,
+            ),
+            "-map", "[mixed]",
+        ]
+    elif music_clips is None and music is not None and config.get("enabled", True) is not False:
+        if config.get("loop", True) is not False:
+            cmd += ["-stream_loop", "-1"]
+        cmd += [
+            "-ss", f"{max(0.0, start):.6f}",
+            "-i", str(music),
+            "-filter_complex", build_music_mix_filter(
+                config,
+                duration,
+                voice_filter=narration_filter,
+                voice_input_index=0,
+                music_input_index=1,
+            ),
+            "-map", "[mixed]",
+        ]
+    elif narration_filter:
+        cmd += ["-filter_complex", narration_filter, "-map", "[voice]"]
+    else:
+        cmd += ["-map", "0:a:0"]
+    cmd += [
+        "-vn",
+        "-c:a", "libmp3lame",
+        "-b:a", audio_bitrate,
+        "-ar", "48000",
+        "-t", f"{duration:.6f}",
+        "-shortest",
+        "-map_metadata", "-1",
         str(out),
     ]
     run_cmd(cmd, dry_run=dry_run)
@@ -2684,6 +2972,8 @@ def load_editor_project_config(path_value: Optional[str]) -> dict[str, Any]:
 def load_editor_music_clips(
     editor_project: dict[str, Any],
     editor_path_value: Optional[str],
+    *,
+    path_resolver: Optional[Callable[[Any], Optional[Path]]] = None,
 ) -> Optional[list[dict[str, Any]]]:
     """Resolve saved timeline items to local audio files."""
     raw_clips = editor_project.get("musicClips")
@@ -2704,16 +2994,19 @@ def load_editor_music_clips(
         if not server_path:
             warn(f"Music clip {raw.get('id', '?')} has no uploaded material")
             continue
-        candidate = Path(str(server_path))
-        candidates = [candidate]
-        if not candidate.is_absolute():
-            candidates.insert(0, Path.cwd() / candidate)
-            if editor_path:
-                candidates.extend([
-                    editor_path.parent / candidate,
-                    editor_path.parent.parent / candidate,
-                ])
-        path = next((item.resolve() for item in candidates if item.is_file()), None)
+        if path_resolver is not None:
+            path = path_resolver(server_path)
+        else:
+            candidate = Path(str(server_path))
+            candidates = [candidate]
+            if not candidate.is_absolute():
+                candidates.insert(0, Path.cwd() / candidate)
+                if editor_path:
+                    candidates.extend([
+                        editor_path.parent / candidate,
+                        editor_path.parent.parent / candidate,
+                    ])
+            path = next((item.resolve() for item in candidates if item.is_file()), None)
         if path is None:
             warn(f"Music clip file not found: {server_path}")
             continue
@@ -2875,6 +3168,11 @@ def cmd_render(args: argparse.Namespace) -> None:
         else {}
     )
     captions_config = {**captions_config, **caption_layer}
+    editor_chapters = (
+        editor_project.get("chapters")
+        if isinstance(editor_project.get("chapters"), list)
+        else []
+    )
     for i, ch in enumerate(chapters):
         if ch.start_seconds >= render_end - 0.001:
             break
@@ -2895,6 +3193,24 @@ def cmd_render(args: argparse.Namespace) -> None:
             continue
         panel = panels_dir / f"{i:03d}.png"
         segment = segments_dir / f"{i:03d}.mp4"
+        editor_chapter = editor_chapters[i] if i < len(editor_chapters) else {}
+        caption_word_timings = (
+            editor_chapter.get("wordTimings", editor_chapter.get("word_timings", []))
+            if isinstance(editor_chapter, dict)
+            else []
+        )
+        source_start = safe_float(
+            str(editor_chapter.get("sourceStartSeconds", editor_chapter.get("source_start_seconds", segment_start)))
+        ) if isinstance(editor_chapter, dict) else segment_start
+        source_end = safe_float(
+            str(editor_chapter.get("sourceEndSeconds", editor_chapter.get("source_end_seconds", segment_end)))
+        ) if isinstance(editor_chapter, dict) else segment_end
+        editor_timeline_start = safe_float(str(editor_chapter.get("start_seconds", segment_start))) if isinstance(editor_chapter, dict) else segment_start
+        editor_timeline_end = safe_float(str(editor_chapter.get("end_seconds", segment_end))) if isinstance(editor_chapter, dict) else segment_end
+        playback_rate = max(
+            0.01,
+            (source_end - source_start) / max(0.01, editor_timeline_end - editor_timeline_start),
+        )
         segment_args_list.append({
             "panel": str(panel),
             "audio": str(audio),
@@ -2911,6 +3227,9 @@ def cmd_render(args: argparse.Namespace) -> None:
             "visualizer": visualizer_config,
             "captions": captions_config,
             "caption_text": ch.text,
+            "caption_word_timings": caption_word_timings,
+            "caption_source_start": source_start,
+            "caption_playback_rate": playback_rate,
             "font": args.font,
             "include_audio": False,
             "gpu_codec": gpu_codec,
@@ -2999,6 +3318,7 @@ def cmd_render(args: argparse.Namespace) -> None:
         music=music,
         music_config=music_config,
         music_clips=music_clips,
+        narration_chapters=editor_chapters,
         start=float(segment_args_list[0]["start"]),
         duration=output_duration,
         audio_bitrate=bitrate_profile["audio_bitrate"],

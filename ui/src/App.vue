@@ -469,6 +469,14 @@
             </label>
             <div class="readonly-row"><span>Конец</span><b>{{ formatTimecode(chapterEnd(selectedChapter.id)) }}</b></div>
             <div class="readonly-row"><span>Длительность</span><b>{{ formatTime(chapterEnd(selectedChapter.id) - selectedChapter.start_seconds, true) }}</b></div>
+            <label class="field-label">Целевая длительность
+              <input :value="formatTimecode(chapterTimelineDuration(selectedChapter))" type="text" placeholder="00:03:00"
+                     @change="setChapterDuration(selectedChapter, $event.target.value)" />
+            </label>
+            <div class="readonly-row"><span>Скорость озвучки</span><b>×{{ chapterPlaybackRate(selectedChapter).toFixed(2) }}</b></div>
+            <p class="sync-note">Потяните жёлтый правый край главы: влево — быстрее, вправо — медленнее.</p>
+            <button v-if="Math.abs(chapterPlaybackRate(selectedChapter) - 1) > 0.001" type="button"
+                    class="jump-button" @click="resetChapterPlaybackRate(selectedChapter)">Вернуть скорость ×1</button>
             <label class="field-label">Изображение главы
               <select v-model="selectedChapter.imageAssetId">
                 <option :value="null">Общий фон проекта</option>
@@ -631,6 +639,27 @@
             <button v-if="!bookPlayerAsset.temporary" class="book-player-video" type="button"
                     title="Передать эту озвучку в видео"
                     @click="sendBookAudioToVideo(bookPlayerAsset)">→ В видео</button>
+            <button v-if="!bookPlayerAsset.temporary" class="book-player-download" type="button"
+                    :disabled="chapterAudioExportBusy"
+                    title="Собрать голос и музыку без видео"
+                    @click="downloadCurrentChapterAudio">
+              {{ chapterAudioExportBusy ? 'Собираем аудио…' : '⇩ Скачать аудио' }}
+            </button>
+            <div v-if="!bookPlayerAsset.temporary && bookPlayerWords.length" class="book-word-navigator"
+                 draggable="false" @dragstart.stop.prevent>
+              <header>
+                <b>Текст озвучки</b>
+                <small :class="{ exact: bookPlayerHasExactTimings }">
+                  {{ bookPlayerHasExactTimings ? 'точные метки слов' : 'расчётные метки — переозвучьте главу для точных' }}
+                </small>
+              </header>
+              <p>
+                <button v-for="word in bookPlayerWords" :key="word.index" type="button"
+                        :class="{ current: currentBookPlayerWord?.index === word.index }"
+                        :title="`${formatTime(word.start, true)} · перейти к слову`"
+                        @click="seekBookPlayer(word.start)">{{ word.text }}</button>
+              </p>
+            </div>
           </div>
           <footer class="book-editor-footer">
             <span>{{ bookWordCount.toLocaleString('ru-RU') }} слов</span>
@@ -749,17 +778,43 @@
                     <i :style="{ width: `${ttsProgressState.percent}%` }"></i>
                   </div>
                   <p>{{ ttsProgressState.detail }}</p>
+                  <p v-if="ttsProgressState.stage" class="tts-progress-stage">{{ ttsProgressState.stage }}</p>
                   <small>Прошло {{ formatTime(ttsProgressState.elapsed, true) }}</small>
+                  <div class="tts-progress-actions">
+                    <button class="tts-stop-button" type="button" :disabled="ttsStopping" @click="cancelActiveTtsJobs">
+                      {{ ttsStopping ? 'Останавливаю…' : 'Остановить' }}
+                    </button>
+                    <button type="button" @click="ttsLogOpen = !ttsLogOpen">
+                      {{ ttsLogOpen ? 'Скрыть диагностику' : 'Показать диагностику' }}
+                    </button>
+                  </div>
                 </div>
                 <p v-else-if="latestTtsJob" class="book-job-state" :class="latestTtsJob.status">
                   {{ ttsJobLabel(latestTtsJob) }}
                   <button v-if="latestTtsJob.status === 'failed'" type="button" @click="narrateCurrentChapter">Повторить</button>
-                  <button v-if="latestTtsJob.status === 'failed'" type="button" @click="openTtsLog">Технический лог</button>
+                  <button type="button" @click="ttsLogOpen = !ttsLogOpen">Диагностика</button>
+                  <button v-if="latestTtsJob.status === 'failed'" type="button" @click="openTtsLog">Открыть полный лог</button>
                 </p>
                 <div v-if="visibleTtsJobs.length > 1" class="tts-batch-list">
-                  <span v-for="job in visibleTtsJobs.slice(0, 12)" :key="job.uuid" :class="job.status">
+                  <button v-for="job in visibleTtsJobs.slice(0, 20)" :key="job.uuid" type="button"
+                          :class="[job.status, { selected: ttsDebugJob?.uuid === job.uuid }]"
+                          @click="selectTtsDebugJob(job)">
                     <b>{{ chapterTitleForJob(job) }}</b><i>{{ ttsJobShortLabel(job.status) }}</i>
-                  </span>
+                  </button>
+                </div>
+                <div v-if="ttsLogOpen && ttsDebugJob" class="tts-debug-console">
+                  <div class="tts-debug-heading">
+                    <span><b>{{ chapterTitleForJob(ttsDebugJob) }}</b><small>{{ ttsDebugJob.stage || ttsJobShortLabel(ttsDebugJob.status) }}</small></span>
+                    <button type="button" @click="openTtsLog">Полный лог ↗</button>
+                  </div>
+                  <div class="tts-debug-meta">
+                    <span>Задача {{ ttsDebugJob.uuid.slice(0, 8) }}</span>
+                    <span>{{ ttsDebugJob.progress_done || 0 }}/{{ ttsDebugJob.progress_total || 1 }} фрагм.</span>
+                    <span v-if="ttsDebugJob.last_activity_at">событие {{ formatTtsDiagnosticTime(ttsDebugJob.last_activity_at) }}</span>
+                  </div>
+                  <pre v-if="ttsDebugEvents.length">{{ ttsDebugEvents.map(formatTtsDiagnosticEvent).join('\n') }}</pre>
+                  <p v-else>Диагностических событий пока нет.</p>
+                  <p v-if="ttsDebugJob.error" class="tts-debug-error">{{ ttsDebugJob.error }}</p>
                 </div>
               </div>
             </details>
@@ -880,6 +935,9 @@
               <i v-if="chapter.index > 0" class="chapter-boundary-handle" title="Переместить границу главы"
                  @pointerdown.stop="startChapterBoundaryPointer($event, chapter)"></i>
               <b>{{ chapter.title }}</b>
+              <small v-if="Math.abs(chapterPlaybackRate(chapter) - 1) > 0.001">×{{ chapterPlaybackRate(chapter).toFixed(2) }}</small>
+              <i class="chapter-stretch-handle" title="Растянуть главу: вправо — медленнее, влево — быстрее"
+                 @pointerdown.stop="startChapterStretchPointer($event, chapter)"></i>
             </button>
           </div>
 
@@ -1137,7 +1195,9 @@
             <footer v-if="navigatorChapter">
               <span><i></i> Текущее слово</span>
               <span><i></i> Выбранный отрывок</span>
-              <b>Привязка слов расчётная; границы глав совпадают с озвучкой.</b>
+              <b>{{ navigatorHasExactTimings
+                ? 'Точные метки слов из озвучки.'
+                : 'Привязка слов расчётная; переозвучьте главу для точных меток.' }}</b>
             </footer>
           </main>
         </div>
@@ -1194,6 +1254,8 @@ const AUDIO_EXT = new Set(['mp3', 'wav', 'm4a', 'aac', 'flac', 'ogg', 'opus'])
 const VIDEO_EXT = new Set(['mp4', 'mov', 'm4v', 'webm', 'mkv', 'avi'])
 const IMAGE_EXT = new Set(['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp'])
 const YOUTUBE_MAX_DURATION_SECONDS = 12 * 60 * 60
+const MIN_CHAPTER_PLAYBACK_RATE = 0.25
+const MAX_CHAPTER_PLAYBACK_RATE = 8
 const RENDER_PRESETS = Object.freeze({
   compact: {
     id: 'compact', label: 'Компактный', videoKbps: 1200, audioKbps: 192,
@@ -1334,6 +1396,9 @@ const bookTts = reactive({
 const ttsJobs = ref([])
 const narrationJobIds = ref([])
 const ttsNow = ref(Date.now())
+const ttsStopping = ref(false)
+const ttsLogOpen = ref(false)
+const ttsDebugJobId = ref('')
 const ttsSessionStartedAt = Date.now()
 const ttsRuntime = reactive({ available: false, message: '', provider: 'edge-tts', version: '' })
 const ttsVoices = ref([])
@@ -1346,10 +1411,12 @@ const bookPlayerTime = ref(0)
 const bookPlayerDuration = ref(0)
 const bookPlayerPlaying = ref(false)
 const bookPlayerVolume = ref(0.86)
+const chapterAudioExportBusy = ref(false)
 let bookAutosaveTimer = null
 let bookEditRevision = 0
 let bookSavePromise = null
 let ttsPollTimer = null
+let ttsPollFailures = 0
 let bookPlayerLoadToken = 0
 let bookPlayerShouldAutoplay = false
 
@@ -1526,6 +1593,7 @@ const selectedBookAudio = computed(() => (
   || currentChapterAudio.value
   || null
 ))
+const selectedBookAudioMetadata = computed(() => parseJsonObject(selectedBookAudio.value?.metadata_json))
 const bookPlayerAsset = computed(() => previewAudio.value || selectedBookAudio.value)
 const bookPlayerUrl = computed(() => {
   const asset = bookPlayerAsset.value
@@ -1558,17 +1626,40 @@ const visibleTtsJobs = computed(() => ttsJobs.value.filter((job) => (
   || new Date(job.created_at).getTime() >= ttsSessionStartedAt
 )))
 const latestTtsJob = computed(() => visibleTtsJobs.value[0] || null)
+const ttsDebugJob = computed(() => (
+  ttsJobs.value.find((job) => job.uuid === ttsDebugJobId.value)
+  || ttsJobs.value.find((job) => job.status === 'running')
+  || latestTtsJob.value
+  || null
+))
+const ttsDebugEvents = computed(() => (
+  Array.isArray(ttsDebugJob.value?.diagnostics)
+    ? ttsDebugJob.value.diagnostics.slice(-80)
+    : []
+))
 const activeTtsJobRunning = computed(() => ttsJobs.value.some((job) => ['queued', 'running'].includes(job.status)))
 const narrationJobs = computed(() => {
   const selected = new Set(narrationJobIds.value)
   if (selected.size) return ttsJobs.value.filter((job) => selected.has(job.uuid))
   return ttsJobs.value.filter((job) => ['queued', 'running'].includes(job.status))
 })
+const bookPlayerWords = computed(() => timedTextWords(
+  currentBookChapter.value?.content || '',
+  0,
+  Math.max(0.1, bookPlayerDuration.value || Number(selectedBookAudio.value?.duration) || 0.1),
+  selectedBookAudio.value?.is_stale ? [] : selectedBookAudioMetadata.value.word_timings,
+))
+const currentBookPlayerWord = computed(() => wordAtTime(bookPlayerWords.value, bookPlayerTime.value))
+const bookPlayerHasExactTimings = computed(() => (
+  Array.isArray(selectedBookAudioMetadata.value.word_timings)
+  && selectedBookAudioMetadata.value.word_timings.length > 0
+  && !selectedBookAudio.value?.is_stale
+))
 const ttsProgressState = computed(() => {
   const jobs = narrationJobs.value
   const active = jobs.some((job) => ['queued', 'running'].includes(job.status))
   if (!active || !jobs.length) {
-    return { active: false, percent: 0, detail: '', elapsed: 0 }
+    return { active: false, percent: 0, detail: '', stage: '', elapsed: 0 }
   }
   const progress = jobs.reduce((total, job) => {
     if (['done', 'failed', 'cancelled', 'skipped'].includes(job.status)) return total + 1
@@ -1595,10 +1686,17 @@ const ttsProgressState = computed(() => {
     .map((job) => new Date(job.started_at || job.created_at).getTime())
     .filter(Number.isFinite)
   const startedAt = timestamps.length ? Math.min(...timestamps) : ttsNow.value
+  const activityAt = new Date(running?.last_activity_at || running?.started_at || running?.created_at).getTime()
+  const quietSeconds = Number.isFinite(activityAt) ? Math.max(0, (ttsNow.value - activityAt) / 1000) : 0
+  let stage = running?.stage || (running?.status === 'queued' ? 'В очереди' : 'Подготовка')
+  if (running?.status === 'running' && quietSeconds > 45) {
+    stage += ` · нет новых данных ${formatTime(quietSeconds, true)} — вероятна проблема сети или VPN`
+  }
   return {
     active: true,
     percent: Math.max(1, Math.min(99, Math.round(progress * 100))),
     detail,
+    stage,
     elapsed: Math.max(0, (ttsNow.value - startedAt) / 1000),
   }
 })
@@ -1613,7 +1711,11 @@ const coverSource = computed(() => assetUrl(coverAsset.value))
 const masterKind = computed(() => audioSource.value ? 'audio' : videoSource.value ? 'video' : null)
 const chapterMax = computed(() => project.chapters.reduce((max, item) => Math.max(max, Number(item.end_seconds) || Number(item.start_seconds) || 0), 0))
 const sceneMax = computed(() => project.scenes.reduce((max, item) => Math.max(max, Number(item.end) || 0), 0))
+const hasChapterTimeStretch = computed(() => project.chapters.some((chapter) => (
+  Math.abs(chapterPlaybackRate(chapter) - 1) > 0.001
+)))
 const duration = computed(() => {
+  if (hasChapterTimeStretch.value && chapterMax.value > 0) return chapterMax.value
   const media = masterKind.value === 'audio' ? audioDuration.value : videoDuration.value
   if (Number.isFinite(media) && media > 0) return media
   return Math.max(chapterMax.value, sceneMax.value, 0)
@@ -1697,6 +1799,7 @@ const navigatorChapter = computed(() => (
   || null
 ))
 const navigatorWords = computed(() => chapterTimelineWords(navigatorChapter.value))
+const navigatorHasExactTimings = computed(() => navigatorWords.value.some((word) => word.timing === 'exact'))
 const navigatorParagraphs = computed(() => {
   const paragraphs = []
   for (const word of navigatorWords.value) {
@@ -1964,13 +2067,94 @@ function readingCaptionChunks(text, wordsPerCard = 14) {
   return chunks
 }
 
-function chapterTimelineWords(chapter) {
-  if (!chapter?.text) return []
-  const text = String(chapter.text)
+function parseJsonObject(value) {
+  if (value && typeof value === 'object' && !Array.isArray(value)) return value
+  try {
+    const parsed = JSON.parse(String(value || '{}'))
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
+  } catch {
+    return {}
+  }
+}
+
+function canonicalTimelineWord(value) {
+  return String(value || '').toLocaleLowerCase('ru-RU').replace(/[^\p{L}\p{N}]+/gu, '')
+}
+
+function applyExactWordTimings(words, exactTimings, start, end) {
+  if (!Array.isArray(exactTimings) || !exactTimings.length) return words
+  const timings = exactTimings
+    .map((timing) => ({
+      text: String(timing?.text || ''),
+      start: Number(timing?.start),
+      end: Number(timing?.end),
+    }))
+    .filter((timing) => Number.isFinite(timing.start) && Number.isFinite(timing.end) && timing.end >= timing.start)
+    .sort((left, right) => left.start - right.start)
+  if (!timings.length) return words
+
+  const anchors = new Map()
+  let timingIndex = 0
+  for (const word of words) {
+    const source = canonicalTimelineWord(word.text)
+    if (!source) continue
+    while (timingIndex < timings.length && !canonicalTimelineWord(timings[timingIndex].text)) timingIndex += 1
+    let combined = ''
+    let matchEnd = timingIndex - 1
+    for (let lookahead = timingIndex; lookahead < Math.min(timings.length, timingIndex + 5); lookahead += 1) {
+      combined += canonicalTimelineWord(timings[lookahead].text)
+      if (combined === source) {
+        matchEnd = lookahead
+        break
+      }
+      if (!source.startsWith(combined)) break
+    }
+    if (matchEnd < timingIndex) continue
+    anchors.set(word.index, {
+      start: Math.max(start, Math.min(end, timings[timingIndex].start)),
+      end: Math.max(start, Math.min(end, timings[matchEnd].end)),
+    })
+    timingIndex = matchEnd + 1
+  }
+  if (!anchors.size) return words
+
+  const result = words.map((word) => ({ ...word }))
+  for (const [index, timing] of anchors) {
+    result[index].start = timing.start
+    result[index].end = Math.max(timing.start + 0.02, timing.end)
+    result[index].timing = 'exact'
+  }
+  let index = 0
+  while (index < result.length) {
+    if (anchors.has(index)) {
+      index += 1
+      continue
+    }
+    const rangeStart = index
+    while (index < result.length && !anchors.has(index)) index += 1
+    const rangeEnd = index
+    const left = rangeStart > 0 ? result[rangeStart - 1].end : start
+    const right = rangeEnd < result.length ? result[rangeEnd].start : end
+    const available = Math.max(0.02 * (rangeEnd - rangeStart), right - left)
+    const totalWeight = result.slice(rangeStart, rangeEnd).reduce((sum, word) => sum + word.weight, 0)
+    let elapsed = 0
+    for (let wordIndex = rangeStart; wordIndex < rangeEnd; wordIndex += 1) {
+      const word = result[wordIndex]
+      word.start = left + elapsed / Math.max(totalWeight, 1) * available
+      elapsed += word.weight
+      word.end = Math.min(right, Math.max(word.start + 0.02, left + elapsed / Math.max(totalWeight, 1) * available))
+    }
+  }
+  return result
+}
+
+function timedTextWords(value, startValue, endValue, exactTimings = []) {
+  if (!value) return []
+  const text = String(value)
   const matches = [...text.matchAll(/\S+/gu)]
   if (!matches.length) return []
-  const start = Number(chapter.start_seconds) || 0
-  const end = Math.max(start + 0.1, Number(chapter.end_seconds) || start + 0.1)
+  const start = Number(startValue) || 0
+  const end = Math.max(start + 0.1, Number(endValue) || start + 0.1)
   const weighted = matches.map((match, index) => {
     const value = match[0]
     const letters = value.replace(/[^\p{L}\p{N}]/gu, '').length
@@ -1991,7 +2175,7 @@ function chapterTimelineWords(chapter) {
   let elapsedWeight = 0
   let paragraph = 0
   let previousEnd = 0
-  return weighted.map((word) => {
+  const estimated = weighted.map((word) => {
     const gap = text.slice(previousEnd, word.sourceIndex)
     if (word.index > 0 && /\n\s*\n/u.test(gap)) paragraph += 1
     const wordStart = start + elapsedWeight / totalWeight * (end - start)
@@ -2005,17 +2189,94 @@ function chapterTimelineWords(chapter) {
       end: Math.max(wordStart + 0.02, wordEnd),
     }
   })
+  return applyExactWordTimings(estimated, exactTimings, start, end)
+}
+
+function chapterSourceStart(chapter) {
+  const value = Number(chapter?.sourceStartSeconds ?? chapter?.source_start_seconds)
+  return Number.isFinite(value) ? Math.max(0, value) : Math.max(0, Number(chapter?.start_seconds) || 0)
+}
+
+function chapterSourceEnd(chapter) {
+  const start = chapterSourceStart(chapter)
+  const value = Number(chapter?.sourceEndSeconds ?? chapter?.source_end_seconds)
+  return Number.isFinite(value) && value > start
+    ? value
+    : Math.max(start + 0.1, Number(chapter?.end_seconds) || start + 0.1)
+}
+
+function chapterSourceDuration(chapter) {
+  return Math.max(0.1, chapterSourceEnd(chapter) - chapterSourceStart(chapter))
+}
+
+function chapterTimelineDuration(chapter) {
+  return Math.max(0.1, Number(chapter?.end_seconds) - Number(chapter?.start_seconds))
+}
+
+function chapterPlaybackRate(chapter) {
+  if (!chapter) return 1
+  const calculated = chapterSourceDuration(chapter) / chapterTimelineDuration(chapter)
+  return Math.max(MIN_CHAPTER_PLAYBACK_RATE, Math.min(MAX_CHAPTER_PLAYBACK_RATE, calculated || 1))
+}
+
+function chapterTimelineWordTimings(chapter) {
+  const timings = chapter?.wordTimings || chapter?.word_timings || []
+  if (!Array.isArray(timings) || !timings.length) return []
+  const sourceStart = chapterSourceStart(chapter)
+  const timelineStart = Number(chapter.start_seconds) || 0
+  const rate = chapterPlaybackRate(chapter)
+  return timings.map((timing) => ({
+    ...timing,
+    start: timelineStart + (Number(timing.start) - sourceStart) / rate,
+    end: timelineStart + (Number(timing.end) - sourceStart) / rate,
+  }))
+}
+
+function chapterTimelineWords(chapter) {
+  if (!chapter?.text) return []
+  return timedTextWords(
+    chapter.text,
+    chapter.start_seconds,
+    chapter.end_seconds,
+    chapterTimelineWordTimings(chapter),
+  )
+}
+
+function wordAtTime(words, timeValue) {
+  if (!words.length) return null
+  const time = Number(timeValue) || 0
+  let low = 0
+  let high = words.length - 1
+  let result = words[0]
+  while (low <= high) {
+    const middle = Math.floor((low + high) / 2)
+    if (words[middle].start <= time) {
+      result = words[middle]
+      low = middle + 1
+    } else {
+      high = middle - 1
+    }
+  }
+  return result
 }
 
 function normalizeChapter(item, index) {
   const start = Number(item.start_seconds ?? parseTimecode(item.start ?? 0)) || 0
   const end = Number(item.end_seconds ?? parseTimecode(item.end ?? 0)) || 0
+  const sourceStart = Number(item.sourceStartSeconds ?? item.source_start_seconds ?? start)
+  const sourceEnd = Number(item.sourceEndSeconds ?? item.source_end_seconds ?? end)
   return {
     ...item,
     id: item.id || uid('chapter'),
     title: String(item.title || `Глава ${index + 1}`),
     start_seconds: Math.max(0, start),
     end_seconds: Math.max(start, end),
+    sourceStartSeconds: Number.isFinite(sourceStart) ? Math.max(0, sourceStart) : Math.max(0, start),
+    sourceEndSeconds: Number.isFinite(sourceEnd) ? Math.max(sourceStart, sourceEnd) : Math.max(start, end),
+    playbackRate: Math.max(
+      MIN_CHAPTER_PLAYBACK_RATE,
+      Math.min(MAX_CHAPTER_PLAYBACK_RATE, Number(item.playbackRate) || 1),
+    ),
   }
 }
 
@@ -2718,13 +2979,22 @@ function syncBookChaptersToVideo(record, master = null) {
   const sourceChapters = master?.chapters?.length
     ? (record?.chapters || []).filter((chapter) => timings.has(chapter.id))
     : (record?.chapters || [])
-  let cursor = 0
+  let sourceCursor = 0
+  let timelineCursor = 0
   project.chapters = sourceChapters.map((chapter, index) => {
     const timing = timings.get(chapter.id)
     const previous = existing.get(chapter.id) || {}
-    const start = timing ? Number(timing.start_seconds) : Math.max(cursor, Number(previous.start_seconds) || index)
-    const end = timing ? Number(timing.end_seconds) : Math.max(start + 1, Number(previous.end_seconds) || start + 1)
-    cursor = end
+    const sourceStart = timing
+      ? Number(timing.start_seconds)
+      : Math.max(sourceCursor, chapterSourceStart(previous) || index)
+    const sourceEnd = timing
+      ? Number(timing.end_seconds)
+      : Math.max(sourceStart + 1, chapterSourceEnd(previous) || sourceStart + 1)
+    const playbackRate = previous.id ? chapterPlaybackRate(previous) : 1
+    const start = timelineCursor
+    const end = start + Math.max(0.1, sourceEnd - sourceStart) / playbackRate
+    sourceCursor = sourceEnd
+    timelineCursor = end
     return {
       ...previous,
       id: previous.id || `book-chapter-${chapter.id}`,
@@ -2735,6 +3005,10 @@ function syncBookChaptersToVideo(record, master = null) {
       sourceContentHash: chapter.content_hash,
       start_seconds: start,
       end_seconds: end,
+      sourceStartSeconds: sourceStart,
+      sourceEndSeconds: sourceEnd,
+      playbackRate,
+      wordTimings: Array.isArray(timing?.word_timings) ? timing.word_timings : [],
       imageAssetId: images.get(chapter.id)?.id || null,
       audioAssetId: audioMaterials.get(chapter.id)?.id || null,
     }
@@ -2760,7 +3034,7 @@ function syncBookChaptersToVideo(record, master = null) {
       project.materials.push(material)
     }
     project.audioAssetId = material.id
-    const total = Number(master.duration) || cursor
+    const total = timelineCursor || Number(master.duration) || sourceCursor
     project.scenes = project.scenes
       .filter((scene) => Number(scene.start) < total)
       .map((scene) => ({
@@ -2839,6 +3113,7 @@ async function switchProject(projectUuid, { initial = false } = {}) {
           .filter((job) => ['queued', 'running'].includes(job.status))
           .map((job) => job.uuid)
         ttsNow.value = Date.now()
+        if (narrationJobIds.value.length) pollTtsBook()
       } catch { /* TTS history is optional */ }
     }
     const edition = record.video_editions?.[0] || null
@@ -3302,12 +3577,62 @@ async function narrateWholeBook() {
   }
 }
 
+async function cancelActiveTtsJobs() {
+  if (!activeProjectUuid.value || !activeTtsJobRunning.value || ttsStopping.value) return
+  ttsStopping.value = true
+  ttsLogOpen.value = true
+  try {
+    const result = await apiRequest(
+      `/projects/${encodeURIComponent(activeProjectUuid.value)}/tts/cancel`,
+      { method: 'POST' },
+    )
+    for (const changed of result.jobs || []) {
+      const index = ttsJobs.value.findIndex((job) => job.uuid === changed.uuid)
+      if (index >= 0) ttsJobs.value[index] = changed
+    }
+    const running = (result.jobs || []).find((job) => job.status === 'running')
+    if (running) ttsDebugJobId.value = running.uuid
+    setNotice(
+      running
+        ? 'Запрошена остановка. Текущий сетевой запрос завершится не позднее таймаута.'
+        : `Остановлено задач: ${result.cancelled || 0}`,
+      'warning',
+      6500,
+    )
+  } catch (error) {
+    setNotice(`Не удалось остановить озвучивание: ${error.message}`, 'error', 7000)
+  } finally {
+    ttsStopping.value = false
+  }
+}
+
+function selectTtsDebugJob(job) {
+  ttsDebugJobId.value = job?.uuid || ''
+  ttsLogOpen.value = true
+}
+
+function formatTtsDiagnosticTime(value) {
+  const date = new Date(value)
+  if (!Number.isFinite(date.getTime())) return '—'
+  return date.toLocaleTimeString('ru-RU', { hour12: false })
+}
+
+function formatTtsDiagnosticEvent(event) {
+  const level = String(event?.level || 'info').toUpperCase()
+  const details = event?.details && Object.keys(event.details).length
+    ? ` ${JSON.stringify(event.details)}`
+    : ''
+  return `[${formatTtsDiagnosticTime(event?.timestamp)}] ${level} ${event?.message || event?.event || 'событие'}${details}`
+}
+
 function pollTtsBook() {
   clearInterval(ttsPollTimer)
+  ttsPollFailures = 0
   ttsPollTimer = setInterval(async () => {
     try {
       ttsNow.value = Date.now()
       const result = await apiRequest(`/projects/${encodeURIComponent(activeProjectUuid.value)}/tts-jobs`)
+      ttsPollFailures = 0
       ttsJobs.value = result.jobs || []
       if (!ttsJobs.value.some((job) => ['queued', 'running'].includes(job.status))) {
         clearInterval(ttsPollTimer)
@@ -3318,24 +3643,34 @@ function pollTtsBook() {
           try { await rebuildBookVideo(record) } catch { /* video can be rebuilt on next open */ }
         }
         const failed = visibleTtsJobs.value.filter((job) => job.status === 'failed').length
+        const cancelled = visibleTtsJobs.value.filter((job) => job.status === 'cancelled').length
         setNotice(
-          failed ? `Очередь завершена, ошибок: ${failed}. Готовые файлы сохранены.` : 'Озвучивание книги завершено',
-          failed ? 'warning' : 'success',
+          failed
+            ? `Очередь завершена, ошибок: ${failed}. Готовые файлы сохранены.`
+            : cancelled
+              ? `Озвучивание остановлено. Отменено задач: ${cancelled}; готовые файлы сохранены.`
+              : 'Озвучивание книги завершено',
+          failed || cancelled ? 'warning' : 'success',
           7000,
         )
       }
-    } catch {
-      clearInterval(ttsPollTimer)
+    } catch (error) {
+      ttsPollFailures += 1
+      if (ttsPollFailures === 3) {
+        setNotice(`Не удаётся обновить прогресс: ${error.message}. Продолжаю переподключаться.`, 'warning', 6000)
+      }
     }
   }, 1500)
 }
 
 function pollTtsJob(jobUuid) {
   clearInterval(ttsPollTimer)
+  ttsPollFailures = 0
   ttsPollTimer = setInterval(async () => {
     try {
       ttsNow.value = Date.now()
       const job = await apiRequest(`/tts-jobs/${encodeURIComponent(jobUuid)}`)
+      ttsPollFailures = 0
       const index = ttsJobs.value.findIndex((item) => item.uuid === jobUuid)
       if (index >= 0) ttsJobs.value[index] = job
       if (!['queued', 'running'].includes(job.status)) {
@@ -3350,12 +3685,17 @@ function pollTtsJob(jobUuid) {
           const ready = record.audio_assets?.find((asset) => asset.file_path === job.output_path)
           if (ready) selectBookAudio(ready, true)
           setNotice('Озвучка главы готова', 'success')
+        } else if (job.status === 'cancelled') {
+          setNotice('Озвучивание главы остановлено', 'warning', 5000)
         } else {
           setNotice(job.user_error || 'Модуль озвучки не запущен. Проверьте установку компонентов TTS.', 'error', 8000)
         }
       }
-    } catch {
-      clearInterval(ttsPollTimer)
+    } catch (error) {
+      ttsPollFailures += 1
+      if (ttsPollFailures === 3) {
+        setNotice(`Не удаётся обновить прогресс: ${error.message}. Продолжаю переподключаться.`, 'warning', 6000)
+      }
     }
   }, 1200)
 }
@@ -3366,6 +3706,7 @@ function ttsJobLabel(job) {
     running: 'Озвучивание выполняется в фоне',
     done: 'Озвучка готова',
     failed: job.user_error || 'Модуль озвучки не запущен. Проверьте установку компонентов TTS.',
+    cancelled: 'Озвучивание отменено',
   }[job.status] || job.status)
 }
 
@@ -3489,8 +3830,11 @@ function waitForBookPlayerReady(player) {
 }
 
 function seekBookPlayer(value) {
-  if (!bookAudioEl.value) return
-  bookAudioEl.value.currentTime = Math.max(0, Math.min(value, bookPlayerDuration.value || value))
+  const player = bookAudioEl.value
+  if (!player) return
+  const target = Math.max(0, Math.min(Number(value) || 0, bookPlayerDuration.value || Number(value) || 0))
+  try { player.currentTime = target } catch { return }
+  bookPlayerTime.value = target
 }
 
 function applyBookPlayerVolume() {
@@ -3569,6 +3913,49 @@ async function sendBookAudioToVideo(asset) {
   if (activeWorkspace.value === 'video') {
     await saveProject({ silent: true })
     setNotice('Озвучка собрана в мастер-аудио и добавлена на видеотаймлайн', 'success', 6500)
+  }
+}
+
+async function downloadCurrentChapterAudio() {
+  const chapter = currentBookChapter.value
+  if (!activeProjectUuid.value || !chapter || !currentChapterAudio.value || chapterAudioExportBusy.value) return
+  if (!(await saveCurrentChapter({ silent: true }))) {
+    setNotice('Сначала нужно сохранить текущую главу', 'error')
+    return
+  }
+  chapterAudioExportBusy.value = true
+  setNotice('Собираем аудио…', 'info', 0)
+  try {
+    const response = await fetch(
+      `${API}/projects/${encodeURIComponent(activeProjectUuid.value)}/chapters/${chapter.id}/audio-export`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ editor_project: serializeProject() }),
+      },
+    )
+    if (!response.ok) {
+      const payload = await response.json().catch(() => ({}))
+      throw new Error(
+        typeof payload.detail === 'string'
+          ? payload.detail
+          : payload.detail?.message || 'Сервер не смог собрать аудио главы',
+      )
+    }
+    const blob = await response.blob()
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = responseDownloadName(response, `${String(chapterDisplayNumber(chapter)).padStart(2, '0')} ${chapter.title}.mp3`)
+    document.body.appendChild(link)
+    link.click()
+    link.remove()
+    setTimeout(() => URL.revokeObjectURL(url), 1500)
+    setNotice('Аудио главы готово — скачивание началось', 'success', 5500)
+  } catch (error) {
+    setNotice(`Не удалось скачать аудио: ${error.message}`, 'error', 7500)
+  } finally {
+    chapterAudioExportBusy.value = false
   }
 }
 
@@ -4772,6 +5159,60 @@ function secondaryTimeAt(absoluteTime) {
   return absoluteTime
 }
 
+function chapterAtTimelineTime(timeValue) {
+  const time = Math.max(0, Number(timeValue) || 0)
+  return timelineChapters.value.find((chapter, index, chapters) => (
+    time >= Number(chapter.start_seconds)
+    && (time < Number(chapter.end_seconds) || index === chapters.length - 1)
+  )) || timelineChapters.value.at(-1) || null
+}
+
+function chapterAtSourceTime(timeValue) {
+  const time = Math.max(0, Number(timeValue) || 0)
+  return timelineChapters.value.find((chapter, index, chapters) => (
+    time >= chapterSourceStart(chapter)
+    && (time < chapterSourceEnd(chapter) || index === chapters.length - 1)
+  )) || timelineChapters.value.at(-1) || null
+}
+
+function sourceTimeAtTimeline(timeValue) {
+  const time = Math.max(0, Number(timeValue) || 0)
+  const chapter = chapterAtTimelineTime(time)
+  if (!chapter || !hasChapterTimeStretch.value) return time
+  return Math.max(
+    chapterSourceStart(chapter),
+    Math.min(
+      chapterSourceEnd(chapter),
+      chapterSourceStart(chapter)
+        + (time - Number(chapter.start_seconds)) * chapterPlaybackRate(chapter),
+    ),
+  )
+}
+
+function timelineTimeAtSource(timeValue) {
+  const time = Math.max(0, Number(timeValue) || 0)
+  const chapter = chapterAtSourceTime(time)
+  if (!chapter || !hasChapterTimeStretch.value) return time
+  return Math.max(
+    Number(chapter.start_seconds),
+    Math.min(
+      Number(chapter.end_seconds),
+      Number(chapter.start_seconds)
+        + (time - chapterSourceStart(chapter)) / chapterPlaybackRate(chapter),
+    ),
+  )
+}
+
+function applyMasterPlaybackRate(timeValue = currentTime.value) {
+  const master = masterElement()
+  if (!master) return
+  const rate = hasChapterTimeStretch.value
+    ? chapterPlaybackRate(chapterAtTimelineTime(timeValue))
+    : 1
+  if (Math.abs(Number(master.playbackRate || 1) - rate) > 0.001) master.playbackRate = rate
+  master.preservesPitch = true
+}
+
 async function togglePlay() {
   const master = masterElement()
   if (!master) return setNotice('Сначала добавьте аудио или видео', 'warning')
@@ -4784,6 +5225,7 @@ async function togglePlay() {
   // element in a suspended Web Audio graph can leave Firefox playing silence.
   const level = Math.min(1, Math.max(0, Number(volume.value) || 0))
   master.volume = level
+  applyMasterPlaybackRate(currentTime.value)
   if (master === audioEl.value) {
     master.defaultMuted = false
     master.muted = false
@@ -4792,11 +5234,11 @@ async function togglePlay() {
   const secondary = secondaryElement()
   if (secondary) {
     secondary.muted = true
-    const target = secondaryTimeAt(master.currentTime)
+    const target = secondaryTimeAt(currentTime.value)
     if (Math.abs(secondary.currentTime - target) > 0.08) secondary.currentTime = target
   }
   try {
-    await startMusicPreview(master.currentTime)
+    await startMusicPreview(currentTime.value)
   } catch (error) {
     setNotice(`Музыка не запустилась, озвучка продолжит играть: ${error.message}`, 'warning', 6000)
   }
@@ -4832,15 +5274,20 @@ function seekTo(value) {
   const next = Math.max(0, Math.min(Number(value) || 0, duration.value || Number(value) || 0))
   currentTime.value = next
   for (const element of [audioEl.value, videoEl.value, musicEl.value]) {
-    if (element && Number.isFinite(element.duration) && Math.abs(element.currentTime - next) > 0.02) {
+    if (element && Number.isFinite(element.duration)) {
       const target = element === musicEl.value
         ? musicTimeAt(next)
         : element === secondaryElement()
           ? secondaryTimeAt(next)
-          : Math.min(next, element.duration)
-      try { element.currentTime = target } catch { /* metadata not ready */ }
+          : element === masterElement()
+            ? sourceTimeAtTimeline(next)
+            : Math.min(next, element.duration)
+      if (Math.abs(element.currentTime - target) > 0.02) {
+        try { element.currentTime = Math.min(target, element.duration) } catch { /* metadata not ready */ }
+      }
     }
   }
+  applyMasterPlaybackRate(next)
 }
 
 function onMediaMetadata(kind) {
@@ -4858,13 +5305,14 @@ function onMediaTime(kind) {
   if (kind !== masterKind.value) return
   const master = masterElement()
   if (!master) return
-  currentTime.value = master.currentTime || 0
+  currentTime.value = timelineTimeAtSource(master.currentTime || 0)
+  applyMasterPlaybackRate(currentTime.value)
   if (stopAtExcerptEnd()) return
   const secondary = secondaryElement()
-  const secondaryTarget = secondaryTimeAt(master.currentTime)
+  const secondaryTarget = secondaryTimeAt(currentTime.value)
   if (secondary && Math.abs(secondary.currentTime - secondaryTarget) > 0.22) secondary.currentTime = secondaryTarget
   const music = musicEl.value
-  const musicTarget = musicTimeAt(master.currentTime)
+  const musicTarget = musicTimeAt(currentTime.value)
   if (music && activeMusicClip.value && project.music.enabled && Math.abs(music.currentTime - musicTarget) > 0.28) {
     music.currentTime = musicTarget
   } else if (music && !activeMusicClip.value) {
@@ -4902,7 +5350,10 @@ function onMediaError(kind) {
 function tickPlayback() {
   if (!playing.value) return
   const master = masterElement()
-  if (master) currentTime.value = master.currentTime || currentTime.value
+  if (master) {
+    currentTime.value = timelineTimeAtSource(master.currentTime || 0)
+    applyMasterPlaybackRate(currentTime.value)
+  }
   if (stopAtExcerptEnd()) return
   playbackFrame = requestAnimationFrame(tickPlayback)
 }
@@ -5052,6 +5503,99 @@ function startSceneClipPointer(event, scene, mode = 'move') {
   window.addEventListener('pointercancel', timelinePointerUp)
 }
 
+function retimeChapterToDuration(chapter, durationValue) {
+  const source = project.chapters.find((item) => item.id === chapter?.id)
+  if (!source) return false
+  const sorted = [...project.chapters].sort((left, right) => left.start_seconds - right.start_seconds)
+  const index = sorted.findIndex((item) => item.id === source.id)
+  if (index < 0) return false
+  const sourceDuration = chapterSourceDuration(source)
+  const minimum = Math.max(0.1, sourceDuration / MAX_CHAPTER_PLAYBACK_RATE)
+  const maximum = sourceDuration / MIN_CHAPTER_PLAYBACK_RATE
+  const nextDuration = Math.max(minimum, Math.min(maximum, Number(durationValue) || sourceDuration))
+  const oldEnd = Number(source.end_seconds)
+  const nextEnd = Number(source.start_seconds) + nextDuration
+  const delta = nextEnd - oldEnd
+  if (Math.abs(delta) < 0.0001) return false
+
+  source.end_seconds = nextEnd
+  source.playbackRate = sourceDuration / nextDuration
+  for (const later of sorted.slice(index + 1)) {
+    later.start_seconds = Math.max(0, Number(later.start_seconds) + delta)
+    later.end_seconds = Math.max(later.start_seconds + 0.1, Number(later.end_seconds) + delta)
+    later.playbackRate = chapterPlaybackRate(later)
+  }
+  for (const scene of project.scenes) {
+    const sceneStart = Number(scene.start) || 0
+    const sceneEnd = Number(scene.end) || sceneStart
+    if (sceneStart >= oldEnd - 0.001) {
+      scene.start = Math.max(0, sceneStart + delta)
+      scene.end = Math.max(scene.start + 0.1, sceneEnd + delta)
+    } else if (sceneEnd >= oldEnd - 0.001) {
+      scene.end = Math.max(sceneStart + 0.1, sceneEnd + delta)
+    }
+  }
+  syncChapterBoundMusicClips()
+  dirty.value = true
+  applyMasterPlaybackRate(currentTime.value)
+  return true
+}
+
+function setChapterDuration(chapter, value) {
+  const requested = parseTimecode(value)
+  if (!Number.isFinite(requested) || requested <= 0) {
+    setNotice('Введите длительность главы, например 00:03:00.', 'warning')
+    return
+  }
+  const sourceDuration = chapterSourceDuration(chapter)
+  const minimum = sourceDuration / MAX_CHAPTER_PLAYBACK_RATE
+  const maximum = sourceDuration / MIN_CHAPTER_PLAYBACK_RATE
+  retimeChapterToDuration(chapter, requested)
+  const applied = chapterTimelineDuration(chapter)
+  if (requested < minimum - 0.01 || requested > maximum + 0.01) {
+    setNotice(`Допустимая скорость ×${MIN_CHAPTER_PLAYBACK_RATE}–×${MAX_CHAPTER_PLAYBACK_RATE}; применено ${formatTime(applied, true)}.`, 'warning', 6000)
+  } else {
+    setNotice(`Глава: ${formatTime(applied, true)} · скорость ×${chapterPlaybackRate(chapter).toFixed(2)}`, 'success')
+  }
+  seekTo(chapter.start_seconds)
+}
+
+function resetChapterPlaybackRate(chapter) {
+  if (retimeChapterToDuration(chapter, chapterSourceDuration(chapter))) {
+    seekTo(chapter.start_seconds)
+    setNotice('Скорость главы возвращена к ×1.', 'success')
+  }
+}
+
+function startChapterStretchPointer(event, chapter) {
+  if (event.button !== 0) return
+  event.preventDefault()
+  const source = project.chapters.find((item) => item.id === chapter.id)
+  const rect = timelineContent.value?.getBoundingClientRect()
+  if (!source || !rect?.width || !duration.value) return
+  pauseAll()
+  select('chapter', source.id)
+  removeTimelinePointerListeners()
+  const originX = event.clientX
+  const originalDuration = chapterTimelineDuration(source)
+  const originalTimelineDuration = duration.value
+  timelinePointerMove = (moveEvent) => {
+    moveEvent.preventDefault()
+    const delta = (moveEvent.clientX - originX) / rect.width * originalTimelineDuration
+    retimeChapterToDuration(source, originalDuration + delta)
+  }
+  timelinePointerUp = () => {
+    removeTimelinePointerListeners()
+    snapGuideTime.value = null
+    snapGuideLabel.value = ''
+    seekTo(source.start_seconds)
+    setNotice(`Глава: ${formatTime(chapterTimelineDuration(source), true)} · скорость ×${chapterPlaybackRate(source).toFixed(2)}`, 'success')
+  }
+  window.addEventListener('pointermove', timelinePointerMove)
+  window.addEventListener('pointerup', timelinePointerUp)
+  window.addEventListener('pointercancel', timelinePointerUp)
+}
+
 function startChapterBoundaryPointer(event, chapter) {
   if (event.button !== 0 || chapter.index <= 0) return
   event.preventDefault()
@@ -5065,8 +5609,15 @@ function startChapterBoundaryPointer(event, chapter) {
   removeTimelinePointerListeners()
   const originX = event.clientX
   const originalStart = Number(source.start_seconds)
-  const minimum = Number(sorted[index - 1].start_seconds) + 0.1
-  const maximum = Math.max(minimum, Number(sorted[index + 1]?.start_seconds ?? duration.value) - 0.1)
+  const previous = sorted[index - 1]
+  const minimum = Math.max(
+    Number(previous.start_seconds) + chapterSourceDuration(previous) / MAX_CHAPTER_PLAYBACK_RATE,
+    Number(source.end_seconds) - chapterSourceDuration(source) / MIN_CHAPTER_PLAYBACK_RATE,
+  )
+  const maximum = Math.min(
+    Number(previous.start_seconds) + chapterSourceDuration(previous) / MIN_CHAPTER_PLAYBACK_RATE,
+    Number(source.end_seconds) - chapterSourceDuration(source) / MAX_CHAPTER_PLAYBACK_RATE,
+  )
   timelinePointerMove = (moveEvent) => {
     moveEvent.preventDefault()
     const delta = (moveEvent.clientX - originX) / rect.width * duration.value
@@ -5075,7 +5626,11 @@ function startChapterBoundaryPointer(event, chapter) {
     const finalValue = Math.max(minimum, Math.min(maximum, snapped))
     if (Math.abs(finalValue - snapped) > 0.001) showTimelineSnap(null)
     source.start_seconds = finalValue
+    previous.end_seconds = finalValue
+    source.playbackRate = chapterPlaybackRate(source)
+    previous.playbackRate = chapterPlaybackRate(previous)
     syncChapterBoundMusicClips()
+    dirty.value = true
   }
   timelinePointerUp = () => {
     removeTimelinePointerListeners()

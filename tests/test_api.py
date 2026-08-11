@@ -130,6 +130,29 @@ class ProjectApiTests(unittest.TestCase):
         self.assertIn("--background", command)
         self.assertEqual(command[command.index("--background") + 1], "backdrop.png")
 
+    def test_export_validation_distinguishes_timeline_from_source_audio(self) -> None:
+        chapters = [
+            {
+                "start_seconds": 0,
+                "end_seconds": 3,
+                "sourceStartSeconds": 0,
+                "sourceEndSeconds": 12,
+            },
+            {
+                "start_seconds": 3,
+                "end_seconds": 7,
+                "sourceStartSeconds": 12,
+                "sourceEndSeconds": 14,
+            },
+        ]
+        self.assertTrue(server.chapters_have_time_stretch(chapters))
+        self.assertEqual(server.chapter_source_bounds(chapters[1]), (12.0, 14.0))
+        self.assertFalse(
+            server.chapters_have_time_stretch(
+                [{"start_seconds": 0, "end_seconds": 3}]
+            )
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

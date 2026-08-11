@@ -2651,6 +2651,14 @@ body.resizing-timeline {
   white-space: nowrap;
 }
 
+.chapter-clip > small {
+  margin-left: auto;
+  padding-right: 7px;
+  color: #e5b95a;
+  font: 700 7px/1 "Cascadia Mono", Consolas, monospace;
+  white-space: nowrap;
+}
+
 .chapter-boundary-handle {
   z-index: 4;
   position: absolute;
@@ -2669,6 +2677,23 @@ body.resizing-timeline {
 .chapter-clip.selected .chapter-boundary-handle {
   opacity: 1;
 }
+
+.chapter-stretch-handle {
+  z-index: 3;
+  position: absolute;
+  top: 0;
+  right: -1px;
+  bottom: 0;
+  width: 9px;
+  border-right: 2px solid rgba(244, 190, 68, .82);
+  background: linear-gradient(270deg, rgba(244, 190, 68, .2), transparent);
+  cursor: ew-resize;
+  opacity: .45;
+  touch-action: none;
+}
+
+.chapter-clip:hover .chapter-stretch-handle,
+.chapter-clip.selected .chapter-stretch-handle { opacity: 1; }
 
 .scene-clip {
   display: flex;
@@ -4572,7 +4597,7 @@ body.resizing-timeline {
 
 .book-audio-player {
   display: grid;
-  grid-template-columns: minmax(150px, 220px) minmax(260px, 1fr) 32px 32px auto;
+  grid-template-columns: minmax(150px, 220px) minmax(260px, 1fr) 32px 32px auto auto;
   align-items: center;
   gap: 8px;
   min-height: 64px;
@@ -4612,6 +4637,63 @@ body.resizing-timeline {
   background: rgba(var(--accent-rgb), .13);
   color: var(--accent);
   font-weight: 800;
+}
+.book-audio-player .book-player-download {
+  width: auto;
+  min-width: 112px;
+  padding: 0 10px;
+  border-color: rgba(101, 201, 185, .42);
+  background: rgba(101, 201, 185, .1);
+  color: #78d4c5;
+  font-weight: 800;
+  white-space: nowrap;
+}
+.book-word-navigator {
+  grid-column: 1 / -1;
+  min-width: 0;
+  border-top: 1px solid rgba(var(--accent-rgb), .18);
+  padding-top: 8px;
+}
+.book-word-navigator > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 6px;
+  color: var(--muted);
+  font-size: 8px;
+  text-transform: uppercase;
+}
+.book-word-navigator > header small { color: #827d86; }
+.book-word-navigator > header small.exact { color: #65c9b9; }
+.book-word-navigator > p {
+  max-height: 116px;
+  margin: 0;
+  overflow-y: auto;
+  color: #cfc7d3;
+  font-family: "Segoe UI", Arial, sans-serif;
+  font-size: 12px;
+  line-height: 1.75;
+  scrollbar-width: thin;
+  scrollbar-color: #44364c #151219;
+}
+.book-word-navigator > p > button {
+  display: inline;
+  margin: 0 .28em 0 0;
+  padding: 1px;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.book-word-navigator > p > button:hover { background: rgba(var(--accent-rgb), .14); color: #fff; }
+.book-word-navigator > p > button.current {
+  background: rgba(244, 198, 94, .12);
+  color: #f4c65e;
+  text-decoration: underline;
+  text-underline-offset: 3px;
 }
 .chapter-order-handle {
   display: flex;
@@ -4865,6 +4947,31 @@ body.resizing-timeline {
   font-size: 8px;
   font-variant-numeric: tabular-nums;
 }
+.tts-progress-card .tts-progress-stage {
+  color: #bfa8c9;
+  white-space: normal;
+}
+.tts-progress-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+.tts-progress-actions button,
+.tts-debug-heading button {
+  min-height: 28px;
+  border: 1px solid #38383f;
+  border-radius: 5px;
+  background: #17171c;
+  color: var(--text-soft);
+  font-size: 8px;
+  font-weight: 750;
+  cursor: pointer;
+}
+.tts-progress-actions .tts-stop-button {
+  border-color: rgba(210, 121, 115, .48);
+  color: #e39a95;
+}
+.tts-progress-actions button:disabled { cursor: wait; opacity: .5; }
 @keyframes ttsProgressSpin {
   to { transform: rotate(360deg); }
 }
@@ -4897,21 +5004,69 @@ body.resizing-timeline {
   max-height: 124px;
   overflow-y: auto;
 }
-.tts-batch-list > span {
+.tts-batch-list > button {
   display: flex;
   justify-content: space-between;
   gap: 8px;
+  width: 100%;
   padding: 4px 6px;
+  border: 1px solid transparent;
   border-radius: 4px;
   background: #151519;
   color: var(--muted);
   font-size: 8px;
+  text-align: left;
+  cursor: pointer;
 }
+.tts-batch-list > button.selected { border-color: rgba(var(--accent-rgb), .4); }
 .tts-batch-list b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tts-batch-list i { flex: 0 0 auto; font-style: normal; }
 .tts-batch-list .done i { color: #70b58e; }
 .tts-batch-list .failed i { color: #d27973; }
+.tts-batch-list .cancelled i { color: #d4a365; }
 .tts-batch-list .running i { color: var(--accent); }
+.tts-debug-console {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+  padding: 9px;
+  border: 1px solid #303038;
+  border-radius: 7px;
+  background: #0b0b0e;
+}
+.tts-debug-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+.tts-debug-heading > span { display: grid; min-width: 0; gap: 2px; }
+.tts-debug-heading b,
+.tts-debug-heading small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tts-debug-heading b { color: #ddd2e1; font-size: 9px; }
+.tts-debug-heading small { color: var(--accent); font-size: 8px; }
+.tts-debug-heading button { flex: 0 0 auto; min-height: 24px; padding: 0 7px; }
+.tts-debug-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  color: var(--muted-dark);
+  font-size: 7px;
+}
+.tts-debug-console pre {
+  max-height: 220px;
+  margin: 0;
+  padding: 8px;
+  overflow: auto;
+  border-radius: 4px;
+  background: #050507;
+  color: #aeb5ab;
+  font: 8px/1.5 Consolas, "Courier New", monospace;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.tts-debug-console > p { margin: 0; color: var(--muted); font-size: 8px; }
+.tts-debug-console .tts-debug-error { color: #e18b85; word-break: break-word; }
 
 .book-audio-empty {
   margin: 0;
@@ -4985,7 +5140,7 @@ body.resizing-timeline {
   .book-workspace { grid-template-columns: 220px minmax(420px, 1fr) 270px; }
   .book-workspace.inspector-collapsed { grid-template-columns: 220px minmax(420px, 1fr) 42px; }
   .book-workspace.inspector-hidden { grid-template-columns: 220px minmax(420px, 1fr); }
-  .book-audio-player { grid-template-columns: minmax(110px, 170px) minmax(220px, 1fr) 28px 28px auto; }
+  .book-audio-player { grid-template-columns: minmax(110px, 170px) minmax(220px, 1fr) 28px 28px auto auto; }
   .book-export-button { padding-inline: 11px; }
 }
 

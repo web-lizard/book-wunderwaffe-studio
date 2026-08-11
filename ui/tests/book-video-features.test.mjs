@@ -11,6 +11,15 @@ test('book audio can be played, dragged, and assembled for video', () => {
   assert.match(source, /\/video-audio\/master/)
 })
 
+test('a narrated chapter can be downloaded as an audio-only mixed MP3', () => {
+  assert.match(source, /⇩ Скачать аудио/)
+  assert.match(source, /Собираем аудио…/)
+  assert.match(source, /downloadCurrentChapterAudio/)
+  assert.match(source, /\/audio-export/)
+  assert.match(source, /editor_project: serializeProject\(\)/)
+  assert.match(source, /\.mp3`/)
+})
+
 test('chapter images and optional reading captions reach the video workspace', () => {
   assert.match(source, /\/chapters\/\$\{chapterId\}\/image/)
   assert.match(source, /imageAssetId/)
@@ -153,6 +162,18 @@ test('timeline magnet snaps book elements to chapters, clips, and the adaptive g
   assert.match(source, /startSceneClipPointer/)
 })
 
+test('chapter items support ripple time stretching with rate-aware playback', () => {
+  assert.match(source, /class="chapter-stretch-handle"/)
+  assert.match(source, /startChapterStretchPointer/)
+  assert.match(source, /function retimeChapterToDuration/)
+  assert.match(source, /sourceStartSeconds/)
+  assert.match(source, /sourceEndSeconds/)
+  assert.match(source, /function sourceTimeAtTimeline/)
+  assert.match(source, /function timelineTimeAtSource/)
+  assert.match(source, /master\.playbackRate = rate/)
+  assert.match(source, /setChapterDuration\(selectedChapter/)
+})
+
 test('text navigator maps words to the timeline and plays selected excerpts', () => {
   assert.match(source, /Текст книги/)
   assert.match(source, /id="text-navigator-title"/)
@@ -164,6 +185,16 @@ test('text navigator maps words to the timeline and plays selected excerpts', ()
   assert.match(source, /function stopAtExcerptEnd/)
   assert.match(source, /class="timeline-excerpt-range"/)
   assert.match(source, /Привязка слов расчётная/)
+})
+
+test('book and video word navigation prefer exact TTS boundaries', () => {
+  assert.match(source, /class="book-word-navigator"/)
+  assert.match(source, /currentBookPlayerWord/)
+  assert.match(source, /seekBookPlayer\(word\.start\)/)
+  assert.match(source, /selectedBookAudioMetadata\.value\.word_timings/)
+  assert.match(source, /function applyExactWordTimings/)
+  assert.match(source, /chapter\?\.wordTimings \|\| chapter\?\.word_timings/)
+  assert.match(source, /wordTimings: Array\.isArray\(timing\?\.word_timings\)/)
 })
 
 test('ordinary book playback is not mistaken for a finished text excerpt', () => {

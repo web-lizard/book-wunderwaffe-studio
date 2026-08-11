@@ -1,14 +1,18 @@
 from __future__ import annotations
 
+import json
+import sys
 import tempfile
+import threading
 import time
+import types
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 from bookender.database import BookenderDatabase
 from bookender.repository import ProjectRepository
-from bookender.tts import TtsService
+from bookender.tts import TtsCancelledError, TtsService
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -54,6 +58,7 @@ class TtsServiceTests(unittest.TestCase):
         output: Path,
         settings: dict[str, str],
         progress_callback=None,
+        **_: object,
     ) -> None:
         if progress_callback:
             progress_callback(1, 1, 1.0)
@@ -144,6 +149,175 @@ class TtsServiceTests(unittest.TestCase):
         self.assertEqual(updates[-1][2], 1.0)
         self.assertTrue(output.is_file())
 
+    def test_synthesis_offsets_exact_word_timings_across_chunks(self) -> None:
+        output = self.user_data / "timed.mp3"
+        chunk_timings = [
+            [{"text": "Первое", "start": 0.1, "end": 0.5}],
+            [{"text": "Второе", "start": 0.2, "end": 0.7}],
+        ]
+        chunk_index = 0
+
+        def fake_chunk(*args, **kwargs):
+            nonlocal chunk_index
+            args[1].write_bytes(f"part-{chunk_index}".encode())
+            result = chunk_timings[chunk_index]
+            chunk_index += 1
+            return result
+
+        def fake_concat(parts: list[Path], destination: Path, **_: object) -> None:
+            destination.write_bytes(b"".join(path.read_bytes() for path in parts))
+
+        with (
+            patch.object(TtsService, "_split_text_chunks", return_value=["Первое", "Второе"]),
+            patch.object(TtsService, "_synthesize_chunk", side_effect=fake_chunk),
+            patch.object(TtsService, "_audio_duration", side_effect=[1.5, 2.0]),
+            patch.object(TtsService, "_concat_mp3_files", side_effect=fake_concat),
+            patch("bookender.tts.shutil.which", return_value="ffmpeg"),
+        ):
+            timings = self.service._synthesize(
+                "Первое Второе",
+                output,
+                {
+                    "voice": "ru-RU-DmitryNeural",
+                    "rate": "+0%",
+                    "pitch": "+0Hz",
+                    "volume": "+0%",
+                    "provider": "edge-tts",
+                },
+            )
+
+        self.assertEqual(timings[0]["start"], 0.1)
+        self.assertEqual(timings[1]["start"], 1.7)
+        self.assertEqual(timings[1]["end"], 2.2)
+
+    def test_chunk_requests_and_converts_word_boundaries(self) -> None:
+        requested: dict[str, object] = {}
+
+        class FakeCommunicate:
+            def __init__(self, text, voice, **kwargs):
+                requested.update({"text": text, "voice": voice, **kwargs})
+
+            async def stream(self):
+                yield {"type": "audio", "data": b"ID3"}
+                yield {
+                    "type": "WordBoundary",
+                    "text": "Слово",
+                    "offset": 1_250_000,
+                    "duration": 3_750_000,
+                }
+
+        output = self.user_data / "boundary.mp3"
+        edge_tts = types.SimpleNamespace(Communicate=FakeCommunicate)
+        with patch.dict(sys.modules, {"edge_tts": edge_tts}):
+            timings = self.service._synthesize_chunk(
+                "Слово",
+                output,
+                {
+                    "voice": "ru-RU-DmitryNeural",
+                    "rate": "+0%",
+                    "pitch": "+0Hz",
+                    "volume": "+0%",
+                    "provider": "edge-tts",
+                },
+            )
+
+        self.assertEqual(requested["boundary"], "WordBoundary")
+        self.assertEqual(requested["connect_timeout"], 12)
+        self.assertEqual(requested["receive_timeout"], 30)
+        self.assertEqual(
+            timings,
+            [{"text": "Слово", "start": 0.125, "end": 0.5}],
+        )
+
+    def test_generated_audio_persists_exact_word_timings(self) -> None:
+        exact = [{"text": "Нейтральный", "start": 0.12, "end": 0.66}]
+
+        def fake_timed_synthesis(*args, **kwargs):
+            output = args[1]
+            output.write_bytes(b"ID3-timed")
+            return exact
+
+        with (
+            patch.object(self.service, "require_available"),
+            patch.object(self.service, "_synthesize", side_effect=fake_timed_synthesis),
+            patch.object(self.service, "_audio_duration", return_value=2.5),
+        ):
+            job = self.wait_for_job(
+                self.service.queue_chapter(
+                    self.project["uuid"], self.chapter["id"]
+                )["uuid"]
+            )
+
+        self.assertEqual(job["status"], "done")
+        restored = self.repository.get_project(
+            self.project["uuid"], include_details=True
+        )
+        metadata = json.loads(restored["audio_assets"][0]["metadata_json"])
+        self.assertEqual(metadata["word_timings"], exact)
+
+    def test_running_job_can_be_cancelled_and_keeps_diagnostics(self) -> None:
+        started = threading.Event()
+
+        def cancellable_synthesis(*args, cancel_check=None, **kwargs):
+            started.set()
+            deadline = time.monotonic() + 3
+            while time.monotonic() < deadline:
+                if cancel_check and cancel_check():
+                    raise TtsCancelledError("cancelled in test")
+                time.sleep(0.01)
+            self.fail("Cancellation was not delivered to synthesis")
+
+        with (
+            patch.object(self.service, "require_available"),
+            patch.object(self.service, "_synthesize", side_effect=cancellable_synthesis),
+        ):
+            queued = self.service.queue_chapter(
+                self.project["uuid"], self.chapter["id"]
+            )
+            self.assertTrue(started.wait(1))
+            stopping = self.service.cancel_job(queued["uuid"])
+            self.assertTrue(stopping["cancel_requested"])
+            finished = self.wait_for_job(queued["uuid"])
+
+        self.assertEqual(finished["status"], "cancelled")
+        self.assertEqual(finished["stage"], "Отменено")
+        events = [item["event"] for item in finished["diagnostics"]]
+        self.assertIn("cancel_requested", events)
+        self.assertIn("job_cancelled", events)
+
+    def test_book_queue_runs_two_chapters_in_parallel(self) -> None:
+        self.repository.create_chapter(
+            self.project["uuid"], title="Вторая", content="Вторая глава."
+        )
+        active = 0
+        maximum = 0
+        lock = threading.Lock()
+
+        def concurrent_synthesis(text, output, settings, progress_callback=None, **kwargs):
+            nonlocal active, maximum
+            with lock:
+                active += 1
+                maximum = max(maximum, active)
+            try:
+                time.sleep(0.12)
+                output.write_bytes(b"ID3" + text.encode("utf-8"))
+                if progress_callback:
+                    progress_callback(1, 1, 1.0)
+            finally:
+                with lock:
+                    active -= 1
+
+        with (
+            patch.object(self.service, "require_available"),
+            patch.object(self.service, "_synthesize", side_effect=concurrent_synthesis),
+            patch.object(self.service, "_audio_duration", return_value=1.0),
+        ):
+            jobs = self.service.queue_book(self.project["uuid"])
+            finished = [self.wait_for_job(job["uuid"]) for job in jobs]
+
+        self.assertEqual([job["status"] for job in finished], ["done", "done"])
+        self.assertGreaterEqual(maximum, 2)
+
     def test_chapter_versions_remain_isolated_and_become_stale(self) -> None:
         with (
             patch.object(self.service, "require_available"),
@@ -207,6 +381,16 @@ class TtsServiceTests(unittest.TestCase):
         self.assertEqual(first_job["status"], "done")
         self.assertEqual(second_job["status"], "done")
 
+        with self.repository.database.transaction() as connection:
+            connection.execute(
+                "UPDATE audio_assets SET metadata_json=? WHERE chapter_id=?",
+                (json.dumps({"word_timings": [{"text": "Первое", "start": 0.2, "end": 0.6}]}), self.chapter["id"]),
+            )
+            connection.execute(
+                "UPDATE audio_assets SET metadata_json=? WHERE chapter_id=?",
+                (json.dumps({"word_timings": [{"text": "Второе", "start": 0.3, "end": 0.8}]}), second["id"]),
+            )
+
         def fake_concat(parts: list[Path], output: Path, **_: object) -> None:
             output.write_bytes(b"".join(path.read_bytes() for path in parts))
 
@@ -219,6 +403,8 @@ class TtsServiceTests(unittest.TestCase):
         )
         self.assertEqual(master["chapters"][0]["start_seconds"], 0)
         self.assertEqual(master["chapters"][1]["start_seconds"], 2.5)
+        self.assertEqual(master["chapters"][0]["word_timings"][0]["start"], 0.2)
+        self.assertEqual(master["chapters"][1]["word_timings"][0]["start"], 2.8)
         self.assertEqual(master["duration"], 5.0)
         self.assertTrue((self.user_data / master["file_path"]).is_file())
 

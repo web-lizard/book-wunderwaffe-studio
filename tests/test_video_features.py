@@ -9,12 +9,15 @@ from unittest.mock import patch
 from suviren_q import (
     VISUALIZER_COLOR_PRESETS,
     _prepare_panel_background,
+    atempo_filter,
     build_music_mix_filter,
     build_music_timeline_filter,
+    build_narration_timeline_filter,
     escape_drawtext_text,
     load_chapters,
     mux_master_audio,
     reading_caption_chunks,
+    render_audio_master,
     visualizer_preset_colors,
 )
 
@@ -48,6 +51,72 @@ class VideoBookFeatureTests(unittest.TestCase):
         )
         self.assertGreater(narrow[0][2].count("\n"), wide[0][2].count("\n"))
 
+    def test_caption_cards_use_exact_word_timing_in_export(self) -> None:
+        words = [f"слово{index}" for index in range(12)]
+        timings = [
+            {
+                "text": word,
+                "start": 100.25 + index * 1.1,
+                "end": 100.75 + index * 1.1,
+            }
+            for index, word in enumerate(words)
+        ]
+        chunks = reading_caption_chunks(
+            " ".join(words),
+            14.0,
+            words_per_card=6,
+            word_timings=timings,
+            timeline_start=100.0,
+        )
+        self.assertEqual(len(chunks), 2)
+        self.assertAlmostEqual(chunks[0][1], 6.85)
+        self.assertAlmostEqual(chunks[1][0], 6.85)
+        self.assertEqual(chunks[-1][1], 14.0)
+
+    def test_caption_cards_scale_exact_timings_with_chapter_speed(self) -> None:
+        words = [f"слово{index}" for index in range(12)]
+        timings = [
+            {"text": word, "start": 100 + index * 2, "end": 101 + index * 2}
+            for index, word in enumerate(words)
+        ]
+        chunks = reading_caption_chunks(
+            " ".join(words),
+            12.0,
+            words_per_card=6,
+            word_timings=timings,
+            timeline_start=40.0,
+            source_start=100.0,
+            playback_rate=2.0,
+        )
+        self.assertEqual(chunks[0][1], 6.0)
+        self.assertEqual(chunks[1][0], 6.0)
+
+    def test_narration_filter_stretches_and_concatenates_chapters(self) -> None:
+        chapters = [
+            {
+                "start_seconds": 0,
+                "end_seconds": 3,
+                "sourceStartSeconds": 0,
+                "sourceEndSeconds": 12,
+            },
+            {
+                "start_seconds": 3,
+                "end_seconds": 7,
+                "sourceStartSeconds": 12,
+                "sourceEndSeconds": 14,
+            },
+        ]
+        audio_filter = build_narration_timeline_filter(
+            chapters,
+            start=0,
+            duration=7,
+        )
+        self.assertIn("atrim=start=0.000000:end=12.000000", audio_filter)
+        self.assertIn("atempo=2.00000000,atempo=2.00000000", audio_filter)
+        self.assertIn("atempo=0.50000000", audio_filter)
+        self.assertIn("concat=n=2:v=0:a=1[voice]", audio_filter)
+        self.assertEqual(atempo_filter(8), "atempo=2.00000000,atempo=2.00000000,atempo=2.00000000")
+
     def test_music_mix_has_volume_three_band_eq_and_limiter(self) -> None:
         audio_filter = build_music_mix_filter(
             {"volume": 0.22, "bass": 3, "mid": -2, "treble": 4},
@@ -76,6 +145,33 @@ class VideoBookFeatureTests(unittest.TestCase):
         self.assertIn("music.flac", command)
         self.assertIn("-filter_complex", command)
         self.assertIn("[mixed]", command)
+
+    def test_mux_uses_retimed_narration_graph(self) -> None:
+        chapters = [
+            {
+                "start_seconds": 0,
+                "end_seconds": 3,
+                "sourceStartSeconds": 0,
+                "sourceEndSeconds": 12,
+            }
+        ]
+        with patch("suviren_q.run_cmd") as run:
+            mux_master_audio(
+                Path("video.mp4"),
+                Path("voice.mp3"),
+                Path("result.mp4"),
+                narration_chapters=chapters,
+                duration=3.0,
+                dry_run=True,
+            )
+        command = run.call_args.args[0]
+        audio_input = command.index("voice.mp3")
+        self.assertNotEqual(command[audio_input - 2], "-ss")
+        self.assertIn("-filter_complex", command)
+        graph = command[command.index("-filter_complex") + 1]
+        self.assertIn("atrim=start=0.000000:end=12.000000", graph)
+        self.assertIn("atempo=2.00000000,atempo=2.00000000", graph)
+        self.assertIn("[voice]", command)
 
     def test_music_timeline_positions_and_mixes_independent_clips(self) -> None:
         clips = [
@@ -123,6 +219,50 @@ class VideoBookFeatureTests(unittest.TestCase):
         self.assertNotIn("outside.flac", command)
         self.assertIn("7.000000", command)
         self.assertIn("-filter_complex", command)
+
+    def test_chapter_audio_export_reuses_music_mix_without_video(self) -> None:
+        with patch("suviren_q.run_cmd") as run:
+            render_audio_master(
+                Path("chapter.mp3"),
+                Path("01 Глава.mp3"),
+                music_config={
+                    "enabled": True,
+                    "loop": True,
+                    "volume": 0.16,
+                    "bass": 2,
+                    "mid": -1,
+                    "treble": 3,
+                },
+                music_clips=[
+                    {
+                        "path": Path("music.flac"),
+                        "start": 10.0,
+                        "end": 20.0,
+                        "sourceOffset": 4.0,
+                        "volume": 0.5,
+                    }
+                ],
+                narration_chapters=[
+                    {
+                        "start_seconds": 10.0,
+                        "end_seconds": 20.0,
+                        "sourceStartSeconds": 0.0,
+                        "sourceEndSeconds": 12.0,
+                    }
+                ],
+                start=10.0,
+                duration=10.0,
+                dry_run=True,
+            )
+        command = run.call_args.args[0]
+        self.assertNotIn("-c:v", command)
+        self.assertEqual(command[command.index("-c:a") + 1], "libmp3lame")
+        self.assertIn("music.flac", command)
+        graph = command[command.index("-filter_complex") + 1]
+        self.assertIn("[0:a]atrim=start=0.000000:end=12.000000", graph)
+        self.assertIn("[1:a]aresample=48000", graph)
+        self.assertIn("volume=0.0800", graph)
+        self.assertIn("alimiter=limit=0.95", graph)
 
     def test_chapter_json_preserves_text_and_image(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

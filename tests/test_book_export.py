@@ -120,6 +120,107 @@ class BookExportTests(unittest.TestCase):
             self.assertTrue(any(name.endswith("/Изображение.png") for name in names))
         self.assertEqual(media_type, "application/zip")
 
+    def test_chapter_audio_export_uses_active_tts_and_video_music_settings(self) -> None:
+        restored = self.repository.get_project(
+            self.project["uuid"], include_details=True
+        )
+        first = restored["chapters"][0]
+        project_folder = restored["project_folder"]
+        project_root = self.user_data / project_folder
+        voice_path = project_root / "audio" / "chapter.mp3"
+        voice_path.parent.mkdir(parents=True, exist_ok=True)
+        voice_path.write_bytes(b"ID3-ready-voice")
+        music_path = project_root / "audio" / "music.flac"
+        music_path.write_bytes(b"fLaC-music")
+        with self.repository.database.transaction() as connection:
+            project_id = connection.execute(
+                "SELECT id FROM projects WHERE uuid=?", (self.project["uuid"],)
+            ).fetchone()["id"]
+            connection.execute(
+                """
+                INSERT INTO audio_assets(
+                    project_id, chapter_id, file_path, duration,
+                    generation_status, voice, source_text_hash,
+                    created_at, updated_at, title, version_number,
+                    is_active, file_size
+                ) VALUES (?, ?, ?, 12, 'ready', 'test', '', ?, ?, 'Голос', 1, 1, ?)
+                """,
+                (
+                    project_id,
+                    first["id"],
+                    f"{project_folder}/audio/chapter.mp3",
+                    "2026-07-29T00:00:00+00:00",
+                    "2026-07-29T00:00:00+00:00",
+                    voice_path.stat().st_size,
+                ),
+            )
+        editor = {
+            "renderPreset": "youtube_1080p",
+            "music": {"enabled": True, "loop": True, "volume": 0.16},
+            "materials": [
+                {
+                    "id": "music-1",
+                    "serverPath": f"{project_folder}/audio/music.flac",
+                }
+            ],
+            "musicClips": [
+                {
+                    "id": "clip-1",
+                    "assetId": "music-1",
+                    "start": 4,
+                    "end": 14,
+                    "sourceOffset": 2,
+                    "volume": 0.5,
+                }
+            ],
+            "chapters": [
+                {
+                    "chapterId": first["id"],
+                    "audioAssetId": "chapter-audio",
+                    "start_seconds": 4,
+                    "end_seconds": 14,
+                }
+            ],
+        }
+
+        def fake_render(_voice: Path, output: Path, **kwargs: object) -> None:
+            output.write_bytes(b"ID3-mixed-output")
+
+        with (
+            patch("suviren_q_server.shutil.which", return_value="ffmpeg"),
+            patch("suviren_q.render_audio_master", side_effect=fake_render) as render,
+        ):
+            output = server.create_chapter_audio_export(
+                self.project["uuid"],
+                first["id"],
+                editor_project=editor,
+            )
+        self.assertEqual(output.name, "01 Первая _ глава.mp3")
+        self.assertEqual(output.read_bytes(), b"ID3-mixed-output")
+        kwargs = render.call_args.kwargs
+        self.assertEqual(kwargs["start"], 4)
+        self.assertEqual(kwargs["duration"], 10)
+        self.assertEqual(kwargs["audio_bitrate"], "320k")
+        self.assertEqual(kwargs["music_config"]["volume"], 0.16)
+        self.assertEqual(kwargs["music_clips"][0]["path"], music_path.resolve())
+
+        editor["chapters"][0]["end_seconds"] = 5
+        with (
+            patch("suviren_q_server.shutil.which", return_value="ffmpeg"),
+            patch("suviren_q.render_audio_master", side_effect=fake_render) as render,
+        ):
+            server.create_chapter_audio_export(
+                self.project["uuid"],
+                first["id"],
+                editor_project=editor,
+            )
+        placeholder_kwargs = render.call_args.kwargs
+        self.assertEqual(placeholder_kwargs["start"], 4)
+        self.assertEqual(placeholder_kwargs["duration"], 12)
+        self.assertEqual(
+            placeholder_kwargs["narration_chapters"][0]["end_seconds"], 16
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

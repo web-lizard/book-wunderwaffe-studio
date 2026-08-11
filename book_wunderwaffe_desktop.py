@@ -41,6 +41,74 @@ def hidden_process_options() -> dict[str, int]:
     return {}
 
 
+def apply_windows_taskbar_icon(window: Any, icon_path: Path = APP_ICON) -> bool:
+    """Bind the branded ICO to the native HWND used by the Windows taskbar."""
+    if os.name != "nt" or not icon_path.is_file():
+        return False
+    try:
+        hwnd = int(window.winId())
+        user32 = ctypes.windll.user32
+        load_image = user32.LoadImageW
+        load_image.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_wchar_p,
+            ctypes.c_uint,
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_uint,
+        ]
+        load_image.restype = ctypes.c_void_p
+        send_message = user32.SendMessageW
+        send_message.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_uint,
+            ctypes.c_size_t,
+            ctypes.c_void_p,
+        ]
+        send_message.restype = ctypes.c_ssize_t
+
+        wm_seticon = 0x0080
+        cached_handles = getattr(window, "_bookender_native_icon_handles", [])
+        if getattr(window, "_bookender_native_icon_hwnd", None) == hwnd and cached_handles:
+            for slot, handle in cached_handles:
+                send_message(
+                    ctypes.c_void_p(hwnd),
+                    wm_seticon,
+                    slot,
+                    ctypes.c_void_p(handle),
+                )
+            return True
+
+        image_icon = 1
+        load_from_file = 0x0010
+        handles: list[tuple[int, int]] = []
+        for slot, size in ((1, 32), (0, 16)):
+            handle = load_image(
+                None,
+                str(icon_path.resolve()),
+                image_icon,
+                size,
+                size,
+                load_from_file,
+            )
+            if handle:
+                send_message(
+                    ctypes.c_void_p(hwnd),
+                    wm_seticon,
+                    slot,
+                    ctypes.c_void_p(handle),
+                )
+                handles.append((slot, int(handle)))
+        if handles:
+            # Windows keeps these handles while the native window is alive.
+            window._bookender_native_icon_handles = handles
+            window._bookender_native_icon_hwnd = hwnd
+            return True
+    except (AttributeError, OSError, TypeError, ValueError):
+        pass
+    return False
+
+
 def ensure_runtime_streams() -> None:
     """Give libraries valid streams when Windows starts us through pythonw.exe."""
     if sys.stdout is None:
@@ -286,6 +354,7 @@ def run_desktop(*, window_smoke_test: bool = False) -> int:
                 self.setWindowIcon(app_icon)
 
             self.view = QWebEngineView(self)
+            self.view.loadFinished.connect(lambda _loaded: self._apply_app_icon())
             profile = QWebEngineProfile.defaultProfile()
             profile.setPersistentStoragePath(str(data_dir / "web-profile"))
             profile.setCachePath(str(data_dir / "web-cache"))
@@ -320,6 +389,15 @@ def run_desktop(*, window_smoke_test: bool = False) -> int:
             self.addAction(full_screen_action)
 
             self.view.load(QUrl(server.url))
+
+        def _apply_app_icon(self) -> None:
+            if app_icon.isNull():
+                return
+            self.setWindowIcon(app_icon)
+            native_window = self.windowHandle()
+            if native_window is not None:
+                native_window.setIcon(app_icon)
+            apply_windows_taskbar_icon(self)
 
         def _smoke_load_finished(self, loaded: bool) -> None:
             if not loaded:
@@ -380,6 +458,8 @@ def run_desktop(*, window_smoke_test: bool = False) -> int:
     window = StudioWindow()
     qt_app.aboutToQuit.connect(server.stop)
     window.showMaximized()
+    qt_app.processEvents()
+    window._apply_app_icon()
     if window_smoke_test:
         QTimer.singleShot(
             20_000,
