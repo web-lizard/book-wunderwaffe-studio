@@ -1,5 +1,5 @@
 <template>
-  <div class="studio" :class="[`theme-${project.theme}`, `workspace-${activeWorkspace}`, { 'is-loading': loading }]"
+  <div class="studio" :class="[`theme-${project.theme}`, `workspace-${activeWorkspace}`, { 'is-loading': loading, 'comic-edition': isComicEdition, 'comic-theater': comicTheater }]"
        :style="{ '--timeline-height': `${timelineHeight}px` }">
     <header class="topbar">
       <div class="brand" aria-label="Book Wunderwaffe Studio">
@@ -157,6 +157,9 @@
             <p><b>{{ currentChapter.title }}</b></p>
           </div>
           <div class="stage-quick-actions">
+            <button v-if="isComicEdition" type="button" class="comic-open-button" @click="toggleComicTheater">
+              {{ comicTheater ? 'Выйти из просмотра' : 'Смотреть Comic Edition' }}
+            </button>
             <span class="video-sync-count" :class="{ ready: videoReadyChapterCount > 0 }">
               Озвучено {{ videoReadyChapterCount }}/{{ videoBookChapterCount }}
             </span>
@@ -170,7 +173,8 @@
 
         <div ref="sceneEl" class="scene-frame"
              :data-mode="visualScene.mode"
-             :class="{ 'visual-opaque': visualScene.opacity >= 1, 'visual-active': visualScene.mode !== 'normal', 'glitch-enabled': project.glitch, 'background-unblurred': !project.backgroundBlur }"
+             :class="{ 'visual-opaque': visualScene.opacity >= 1, 'visual-active': visualScene.mode !== 'normal', 'glitch-enabled': project.glitch, 'background-unblurred': !project.backgroundBlur, 'comic-controls-visible': comicControlsVisible || !playing }"
+             @pointermove="showComicControls"
              @pointerdown.self="select('project')">
           <div class="scene-backdrop" :style="backgroundStyle"></div>
           <video v-if="videoSource" ref="videoEl" class="scene-video" :src="videoSource" playsinline
@@ -183,7 +187,7 @@
           <div class="scene-grid" aria-hidden="true"></div>
           <div v-if="project.glitch" class="glitch-scan" aria-hidden="true"></div>
 
-          <button v-if="coverEnabled" type="button" class="composition-layer cover-layer"
+          <button v-if="!isComicEdition && coverEnabled" type="button" class="composition-layer cover-layer"
                   :class="{ selected: selection.type === 'layer' && selection.id === 'cover' }"
                   :style="layerStyle('cover')" @pointerdown.stop="onLayerPointerDown('cover', $event)">
             <img v-if="coverSource" :src="coverSource" alt="Обложка книги" />
@@ -193,7 +197,7 @@
             <span class="layer-resize-handle resize-se" @pointerdown.stop.prevent="onLayerResizePointerDown('cover', 'se', $event)"></span>
           </button>
 
-          <button v-if="layerVisible('title')" ref="titleLayerEl" type="button" class="composition-layer title-layer"
+          <button v-if="!isComicEdition && layerVisible('title')" ref="titleLayerEl" type="button" class="composition-layer title-layer"
                   :class="{ selected: selection.type === 'layer' && selection.id === 'title' }"
                   :style="layerStyle('title')" @pointerdown.stop="onLayerPointerDown('title', $event)">
             <span ref="titleStackEl" class="chapter-stack" lang="ru">
@@ -210,7 +214,7 @@
             <span class="layer-resize-handle resize-se" @pointerdown.stop.prevent="onLayerResizePointerDown('title', 'se', $event)"></span>
           </button>
 
-          <button v-if="project.captions?.enabled && layerVisible('caption') && currentReadingCaption"
+          <button v-if="!isComicEdition && project.captions?.enabled && layerVisible('caption') && currentReadingCaption"
                   type="button" class="composition-layer reading-caption"
                   :class="{ selected: selection.type === 'layer' && selection.id === 'caption' }"
                   :style="layerStyle('caption')" aria-live="off"
@@ -234,9 +238,10 @@
           <component v-for="clip in previewVisualClips" :is="VISUAL_CONTENT_COMPONENTS[clip.mode]" :key="`${clip.chapterId}-${clip.id}`"
                          :clip="clip" :src="assetUrl(assetById(clip.assetId))"
                          :opacity="visualScene.visual?.id === clip.id ? visualScene.opacity : 0"
+                         :comic="isComicEdition"
                          :scene-width="sceneEl?.clientWidth || 960" />
 
-          <a class="telegram-qr" :href="TELEGRAM_URL" target="_blank" rel="noopener noreferrer"
+          <a v-if="!isComicEdition" class="telegram-qr" :href="TELEGRAM_URL" target="_blank" rel="noopener noreferrer"
              title="Telegram · Temple of Lizard" draggable="false" @pointerdown.stop @click.stop>
             <span class="telegram-qr-code">
               <QrcodeVue :value="TELEGRAM_URL" :size="256" level="H" render-as="svg"
@@ -245,7 +250,7 @@
             <span class="telegram-qr-copy"><b>TELEGRAM</b><small>@temple_of_lizard</small></span>
           </a>
 
-          <button v-if="layerVisible('visualizer')" type="button" class="composition-layer visualizer-layer"
+          <button v-if="!isComicEdition && layerVisible('visualizer')" type="button" class="composition-layer visualizer-layer"
                   :class="{ selected: selection.type === 'layer' && selection.id === 'visualizer' }"
                   :style="layerStyle('visualizer')" @pointerdown.stop="onLayerPointerDown('visualizer', $event)">
             <canvas ref="visualizerCanvas" aria-label="Визуализация аудио"></canvas>
@@ -254,10 +259,32 @@
             <span class="layer-resize-handle resize-se" @pointerdown.stop.prevent="onLayerResizePointerDown('visualizer', 'se', $event)"></span>
           </button>
 
-          <div class="scene-corner scene-corner-bottom">
+          <div v-if="!isComicEdition" class="scene-corner scene-corner-bottom">
             <span>{{ formatTime(currentTime) }}</span>
             <div><i :style="{ width: `${progressPercent}%` }"></i></div>
             <span>{{ formatTime(duration) }}</span>
+          </div>
+
+          <div v-if="isComicEdition" class="comic-viewer-chrome" @pointerdown.stop>
+            <transition name="comic-title">
+              <header v-if="showComicChapterTitle" :key="currentChapter?.id" class="comic-chapter-title">
+                <small>ТОРГОВЕЦ СОЛНЦЕМ</small>
+                <strong>{{ currentChapter?.title }}</strong>
+              </header>
+            </transition>
+            <div v-if="currentReadingCaption" class="comic-caption" aria-live="off">{{ currentReadingCaption }}</div>
+            <div class="comic-controls" role="group" aria-label="Управление Comic Edition">
+              <button type="button" :disabled="!masterKind" title="Назад на 10 секунд" @click="seekBy(-10)">−10</button>
+              <button type="button" class="comic-play" :disabled="!masterKind" :title="playing ? 'Пауза' : 'Воспроизвести'" @click="togglePlay">
+                <span v-if="playing">Ⅱ</span><span v-else>▶</span>
+              </button>
+              <button type="button" :disabled="!masterKind" title="Вперёд на 10 секунд" @click="seekBy(10)">+10</button>
+              <span>{{ formatTime(currentTime, true) }}</span>
+              <input type="range" min="0" :max="Math.max(duration, 0.01)" step="0.01" :value="currentTime"
+                     :disabled="!masterKind" aria-label="Позиция воспроизведения" @input="seekTo(Number($event.target.value))" />
+              <span>{{ formatTime(duration, true) }}</span>
+              <button type="button" class="comic-close" title="Закрыть просмотр" @click="toggleComicTheater">×</button>
+            </div>
           </div>
         </div>
 
@@ -302,6 +329,12 @@
                 <option value="amber">Тёплый графит</option>
                 <option value="violet">Ночной фиолетовый</option>
                 <option value="mono">Монохром</option>
+              </select>
+            </label>
+            <label class="field-label">Режим просмотра
+              <select v-model="project.presentationMode">
+                <option value="classic">Классический</option>
+                <option value="comic">Comic Edition</option>
               </select>
             </label>
 
@@ -1529,6 +1562,7 @@ function freshProject() {
     title: 'Новая аудиокнига',
     author: '',
     theme: 'amber',
+    presentationMode: 'classic',
     glitch: true,
     renderPreset: 'balanced',
     audioAssetId: null,
@@ -1646,6 +1680,9 @@ const currentTime = ref(0)
 const audioDuration = ref(0)
 const videoDuration = ref(0)
 const playing = ref(false)
+const comicTheater = ref(false)
+const comicControlsVisible = ref(true)
+let comicControlsTimer = null
 const volume = ref(0.86)
 const musicPreviewPlaying = ref(false)
 const musicEqState = reactive({
@@ -2094,6 +2131,11 @@ const currentChapterIndex = computed(() => {
   return result
 })
 const currentChapter = computed(() => currentChapterIndex.value >= 0 ? timelineChapters.value[currentChapterIndex.value] : null)
+const isComicEdition = computed(() => project.presentationMode === 'comic')
+const showComicChapterTitle = computed(() => {
+  if (!isComicEdition.value || !currentChapter.value) return false
+  return currentTime.value - Number(currentChapter.value.start_seconds || 0) < Number(project.comic?.chapterTitleSeconds || 8)
+})
 const previousChapter = computed(() => currentChapterIndex.value > 0 ? timelineChapters.value[currentChapterIndex.value - 1] : null)
 const nextChapter = computed(() => currentChapterIndex.value >= 0 ? timelineChapters.value[currentChapterIndex.value + 1] || null : null)
 
@@ -3501,6 +3543,15 @@ async function switchProject(projectUuid, { initial = false } = {}) {
 async function setWorkspace(workspace) {
   if (workspace === activeWorkspace.value) return
   if (workspace === 'video' && activeProjectRecord.value?.book) {
+    const readyMaster = project.materials.find(item => item.id === project.audioAssetId && item.role === 'book-master')
+    if (activeVideoEditionId.value && readyMaster) {
+      if (!(await flushActiveWorkspace())) return
+      activeWorkspace.value = 'video'
+      await nextTick()
+      audioEl.value?.load()
+      await refreshWaveform()
+      return
+    }
     await openBookInVideo()
     return
   }
@@ -5819,6 +5870,21 @@ function seekTo(value) {
   applyMasterPlaybackRate(next)
 }
 
+function showComicControls() {
+  if (!isComicEdition.value) return
+  comicControlsVisible.value = true
+  clearTimeout(comicControlsTimer)
+  if (playing.value) {
+    comicControlsTimer = setTimeout(() => { comicControlsVisible.value = false }, Number(project.comic?.controlsAutoHideMs || 2200))
+  }
+}
+
+function toggleComicTheater() {
+  if (!isComicEdition.value) return
+  comicTheater.value = !comicTheater.value
+  showComicControls()
+}
+
 function onMediaMetadata(kind) {
   const element = kind === 'audio' ? audioEl.value : videoEl.value
   const mediaDuration = Number(element?.duration)
@@ -6789,6 +6855,11 @@ function handleKeydown(event) {
     if (event.key === 'Escape') visualPickerChapterId.value = null
     return
   }
+  if (event.key === 'Escape' && comicTheater.value) {
+    event.preventDefault()
+    comicTheater.value = false
+    return
+  }
   if (activeWorkspace.value === 'video' && ['Delete', 'Backspace'].includes(event.key)
       && !editing && selectedVisual.value && !showExport.value && !showTextNavigator.value) {
     event.preventDefault()
@@ -6879,6 +6950,9 @@ watch(() => currentChapter.value?.id, (chapterId) => {
   nextTick(scrollCurrentNavigatorWordIntoView)
 })
 
+watch(playing, () => showComicControls())
+watch(isComicEdition, enabled => { if (!enabled) comicTheater.value = false })
+
 watch(() => currentNavigatorWord.value?.index, () => {
   if (showTextNavigator.value && playing.value) nextTick(scrollCurrentNavigatorWordIntoView)
 })
@@ -6930,6 +7004,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   visualPlanRevision += 1
   clearTimeout(visualPlanTimer)
+  clearTimeout(comicControlsTimer)
   window.removeEventListener('keydown', handleKeydown)
   window.removeEventListener('beforeunload', handleBeforeUnload)
   removeTimelinePointerListeners()

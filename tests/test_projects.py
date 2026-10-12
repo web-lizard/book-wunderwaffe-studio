@@ -102,6 +102,59 @@ class ProjectRepositoryTests(unittest.TestCase):
         self.assertTrue((backup / "project.json").is_file())
         self.assertTrue((backup / "manifest.json").is_file())
 
+    def test_duplicate_copies_media_files_assets_and_remaps_chapters(self) -> None:
+        project = self.repository.create_project(
+            title="Оригинал", create_first_chapter=True
+        )
+        chapter = project["chapters"][0]
+        source_relative = (
+            Path(project["project_folder"]) / "audio" / "chapter.mp3"
+        ).as_posix()
+        source_file = self.user_data / source_relative
+        source_file.write_bytes(b"narration")
+        with self.database.transaction() as connection:
+            connection.execute(
+                """
+                INSERT INTO audio_assets(
+                    project_id, chapter_id, file_path, duration,
+                    generation_status, voice, source_text_hash,
+                    created_at, updated_at, title, is_active, file_size
+                )
+                SELECT id, ?, ?, 12.5, 'ready', 'voice', '',
+                       created_at, updated_at, 'Озвучка', 1, ?
+                FROM projects WHERE uuid=?
+                """,
+                (chapter["id"], source_relative, source_file.stat().st_size, project["uuid"]),
+            )
+        edition = self.repository.create_video_edition(project["uuid"])
+        payload = edition["settings"]
+        payload["materials"] = [{
+            "id": "voice", "type": "audio", "serverPath": source_relative,
+            "chapterId": chapter["id"],
+        }]
+        self.repository.save_video_edition(
+            project["uuid"], payload, edition_id=edition["id"]
+        )
+
+        duplicate = self.repository.duplicate_project(
+            project["uuid"], title="Оригинал — сохранённая версия"
+        )
+        copied_chapter = duplicate["chapters"][0]
+        copied_audio = duplicate["audio_assets"][0]
+        copied_settings = duplicate["video_editions"][0]["settings"]
+        self.assertEqual(duplicate["title"], "Оригинал — сохранённая версия")
+        self.assertNotEqual(copied_chapter["id"], chapter["id"])
+        self.assertEqual(copied_audio["chapter_id"], copied_chapter["id"])
+        self.assertIn(duplicate["uuid"], copied_audio["file_path"])
+        self.assertNotIn(project["uuid"], copied_audio["file_path"])
+        self.assertEqual(
+            copied_settings["chapters"][0]["chapterId"], copied_chapter["id"]
+        )
+        self.assertEqual(
+            copied_settings["materials"][0]["chapterId"], copied_chapter["id"]
+        )
+        self.assertTrue((self.user_data / copied_audio["file_path"]).is_file())
+
     def test_chapter_zero_is_unique_and_inserted_before_regular_chapters(self) -> None:
         project = self.repository.create_project(
             title="Книга с прологом", create_first_chapter=True

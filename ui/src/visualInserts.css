@@ -2,6 +2,20 @@
 .chapter-visual-backdrop { position: absolute; inset: -4%; background-size: cover; background-position: center; }
 .chapter-visual-image { position: absolute; object-fit: contain; }
 .chapter-visual-badge { position: absolute; display: flex; align-items: center; padding: 0 1.2%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; width: fit-content !important; max-width: 76%; border-radius: 5px; background: rgba(0,0,0,.58); color: #f4f0e8; font-size: clamp(9px, 1.25cqw, 24px); }
+.chapter-visual-content.comic { background: #050505; }
+.chapter-visual-content.comic .chapter-visual-backdrop { display: none; }
+.chapter-visual-content.comic .chapter-visual-image {
+  inset: -1.5% !important;
+  width: 103% !important;
+  height: 103% !important;
+  object-fit: cover;
+  transform-origin: center;
+  animation: comic-ken-burns 18s ease-in-out both;
+}
+@keyframes comic-ken-burns {
+  from { transform: scale(1.015) translate3d(-.35%, .2%, 0); }
+  to { transform: scale(1.075) translate3d(.45%, -.3%, 0); }
+}
 .scene-frame.visual-opaque > .cover-layer,
 .scene-frame.visual-opaque > .title-layer,
 .scene-frame.visual-opaque > .reading-caption { visibility: hidden; }

@@ -1005,10 +1005,12 @@ class ProjectRepository:
         }
         return self.save_video_edition(project_uuid, payload)
 
-    def duplicate_project(self, project_uuid: str) -> dict[str, Any]:
+    def duplicate_project(
+        self, project_uuid: str, *, title: str | None = None
+    ) -> dict[str, Any]:
         source = self.get_project(project_uuid, include_details=True)
         duplicate = self.create_project(
-            title=f"{source['title']} — копия",
+            title=title or f"{source['title']} — копия",
             author=source["author"],
             description=source["description"],
             project_kind=source["project_kind"],
@@ -1016,15 +1018,186 @@ class ProjectRepository:
             voice=(source.get("tts_settings") or {}).get("voice", ""),
             create_book=source.get("book") is not None,
         )
+        source_root = USER_DATA / source["project_folder"]
+        duplicate_root = USER_DATA / duplicate["project_folder"]
+        if source_root.exists():
+            shutil.copytree(source_root, duplicate_root, dirs_exist_ok=True)
+
+        chapter_ids: dict[int, int] = {}
         for chapter in source.get("chapters", []):
-            self.create_chapter(
+            copied = self.create_chapter(
                 duplicate["uuid"],
                 title=chapter["title"],
                 content=chapter["content"],
                 is_zero=bool(chapter.get("is_zero")),
             )
+            chapter_ids[int(chapter["id"])] = int(copied["id"])
+
+        def copied_path(value: str) -> str:
+            return value.replace(source["uuid"], duplicate["uuid"])
+
+        def copied_settings(value: Any, key: str = "") -> Any:
+            if key == "chapterId" and isinstance(value, int):
+                return chapter_ids.get(value, value)
+            if isinstance(value, dict):
+                return {
+                    item_key: copied_settings(item_value, item_key)
+                    for item_key, item_value in value.items()
+                }
+            if isinstance(value, list):
+                return [copied_settings(item) for item in value]
+            if isinstance(value, str):
+                if key == "id":
+                    for old_id, new_id in chapter_ids.items():
+                        if value == f"chapter-{old_id}":
+                            return f"chapter-{new_id}"
+                        if value == f"book-chapter-{old_id}":
+                            return f"book-chapter-{new_id}"
+                return copied_path(value)
+            return value
+
+        with self.database.transaction() as connection:
+            source_row = self._project_row(connection, source["uuid"])
+            duplicate_row = self._project_row(connection, duplicate["uuid"])
+            source_book = connection.execute(
+                "SELECT * FROM books WHERE project_id=?", (source_row["id"],)
+            ).fetchone()
+            if source_book is not None:
+                connection.execute(
+                    """
+                    UPDATE books SET subtitle=?, language=?, updated_at=?
+                    WHERE project_id=?
+                    """,
+                    (
+                        source_book["subtitle"],
+                        source_book["language"],
+                        utc_now(),
+                        duplicate_row["id"],
+                    ),
+                )
+
+            tts = source.get("tts_settings")
+            if tts:
+                connection.execute(
+                    """
+                    UPDATE tts_settings
+                    SET voice=?, rate=?, pitch=?, volume=?, provider=?,
+                        settings_json=?, updated_at=?
+                    WHERE project_id=?
+                    """,
+                    (
+                        tts["voice"],
+                        tts["rate"],
+                        tts["pitch"],
+                        tts["volume"],
+                        tts["provider"],
+                        tts["settings_json"],
+                        utc_now(),
+                        duplicate_row["id"],
+                    ),
+                )
+
+            for old_id, new_id in chapter_ids.items():
+                for note in connection.execute(
+                    "SELECT * FROM chapter_meta_notes WHERE chapter_id=?", (old_id,)
+                ).fetchall():
+                    connection.execute(
+                        """
+                        INSERT INTO chapter_meta_notes(
+                            id, chapter_id, start_offset, end_offset,
+                            selected_text, note, color_index, detached,
+                            created_at, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            str(uuidlib.uuid4()), new_id, note["start_offset"],
+                            note["end_offset"], note["selected_text"], note["note"],
+                            note["color_index"], note["detached"], note["created_at"],
+                            note["updated_at"],
+                        ),
+                    )
+                for version in connection.execute(
+                    "SELECT * FROM chapter_text_versions WHERE chapter_id=?", (old_id,)
+                ).fetchall():
+                    connection.execute(
+                        """
+                        INSERT INTO chapter_text_versions(
+                            chapter_id, title, content, notes_json,
+                            created_at, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            new_id, version["title"], version["content"],
+                            version["notes_json"], version["created_at"],
+                            version["updated_at"],
+                        ),
+                    )
+
+            for asset in source.get("audio_assets", []):
+                connection.execute(
+                    """
+                    INSERT INTO audio_assets(
+                        project_id, chapter_id, file_path, duration,
+                        generation_status, voice, source_text_hash,
+                        created_at, updated_at, title, rate, pitch, volume,
+                        version_number, is_active, file_size, metadata_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        duplicate_row["id"],
+                        chapter_ids.get(int(asset["chapter_id"]))
+                        if asset.get("chapter_id") is not None else None,
+                        copied_path(asset["file_path"]), asset["duration"],
+                        asset["generation_status"], asset["voice"],
+                        asset["source_text_hash"], asset["created_at"],
+                        asset["updated_at"], asset["title"], asset["rate"],
+                        asset["pitch"], asset["volume"], asset["version_number"],
+                        asset["is_active"], asset["file_size"],
+                        asset["metadata_json"],
+                    ),
+                )
+
+            for asset in source.get("visual_assets", []):
+                connection.execute(
+                    """
+                    INSERT INTO visual_assets(
+                        project_id, chapter_id, file_path, asset_type,
+                        title, metadata_json, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        duplicate_row["id"],
+                        chapter_ids.get(int(asset["chapter_id"]))
+                        if asset.get("chapter_id") is not None else None,
+                        copied_path(asset["file_path"]), asset["asset_type"],
+                        asset["title"], asset["metadata_json"], asset["created_at"],
+                    ),
+                )
+
+            for setting in connection.execute(
+                "SELECT * FROM project_settings WHERE project_id=?",
+                (source_row["id"],),
+            ).fetchall():
+                connection.execute(
+                    """
+                    INSERT INTO project_settings(project_id, namespace, key, value_json)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (
+                        duplicate_row["id"], setting["namespace"], setting["key"],
+                        json_text(copied_settings(json_value(setting["value_json"], {}))),
+                    ),
+                )
+
         for edition in source.get("video_editions", []):
-            self.save_video_edition(duplicate["uuid"], edition["settings"])
+            self.save_video_edition(
+                duplicate["uuid"], copied_settings(edition["settings"])
+            )
+        log_event(
+            "project_duplicated",
+            source_project_uuid=source["uuid"],
+            project_uuid=duplicate["uuid"],
+        )
         return self.get_project(duplicate["uuid"], include_details=True)
 
     def backup_project(self, project_uuid: str) -> Path:

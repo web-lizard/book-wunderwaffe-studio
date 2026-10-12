@@ -32,11 +32,11 @@ function audioFixture() {
   return data
 }
 
-async function openFixture(page) {
+async function openFixture(page, options = {}) {
   const errors = []
   page.on('pageerror', error => errors.push(error.message))
   let saved = {
-    schemaVersion: 2, title: 'Видеороман', audioAssetId: 'voice', coverAssetId: 'cover', backgroundAssetId: 'cover',
+    schemaVersion: 2, title: 'Видеороман', presentationMode: options.presentationMode || 'classic', audioAssetId: 'voice', coverAssetId: 'cover', backgroundAssetId: 'cover',
     duration_seconds: 60, glitch: false, captions: { enabled: true },
     materials: [
       { id: 'voice', type: 'audio', name: 'Озвучка.wav', serverPath: 'fixture/voice.wav' },
@@ -45,7 +45,8 @@ async function openFixture(page) {
       { id: 'comic', type: 'image', name: 'Кадр комикса', serverPath: 'fixture/comic.png' },
     ],
     chapters: [
-      { id: 'one', title: 'Глава первая', start_seconds: 0, end_seconds: 40, imageAssetId: 'art', text: 'Текст звучащей книги. Слушатель видит слова и иллюстрации.' },
+      { id: 'one', title: 'Глава первая', start_seconds: 0, end_seconds: 40, imageAssetId: 'art', text: 'Текст звучащей книги. Слушатель видит слова и иллюстрации.',
+        visualInserts: options.presentationMode === 'comic' ? [{ id: 'comic-opening', assetId: 'comic', type: 'image', startTime: 0, duration: 40, transition: 'crossfade', transitionDuration: .75 }] : [] },
       { id: 'two', title: 'Короткая глава', start_seconds: 40, end_seconds: 60, text: 'Снова обычная композиция.' },
     ], scenes: [{ id: 'scene', name: 'Оформление', start: 0, end: 60 }],
   }
@@ -83,6 +84,20 @@ async function openFixture(page) {
   await page.waitForFunction(() => document.querySelector('.studio audio')?.readyState >= 2)
   return { errors, saved: () => saved }
 }
+
+test('comic edition uses full-bleed art, literary subtitles and theater controls', async ({ page }) => {
+  const fixture = await openFixture(page, { presentationMode: 'comic' })
+  await expect(page.locator('.chapter-visual-content.comic')).toHaveCount(1)
+  await expect(page.locator('.comic-caption')).toContainText('Текст звучащей книги')
+  await expect(page.locator('.telegram-qr')).toHaveCount(0)
+  await page.getByRole('button', { name: 'Смотреть Comic Edition' }).click()
+  await expect(page.locator('.studio')).toHaveClass(/comic-theater/)
+  await expect(page.locator('.topbar')).toBeHidden()
+  await expect(page.locator('.comic-controls')).toBeVisible()
+  await page.keyboard.press('Escape')
+  await expect(page.locator('.studio')).not.toHaveClass(/comic-theater/)
+  expect(fixture.errors).toEqual([])
+})
 
 async function seek(page, time) {
   await page.locator('.transport-scrubber').evaluate((input, value) => {
