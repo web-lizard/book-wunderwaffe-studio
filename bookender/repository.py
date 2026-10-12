@@ -208,6 +208,23 @@ class ProjectRepository:
                     ]
                 else:
                     project["chapters"] = []
+                chapter_ids = [int(chapter["id"]) for chapter in project["chapters"]]
+                project["chapter_meta_notes"] = []
+                project["chapter_text_versions"] = []
+                if chapter_ids:
+                    placeholders = ",".join("?" for _ in chapter_ids)
+                    project["chapter_meta_notes"] = [
+                        dict(item) for item in connection.execute(
+                            f"SELECT * FROM chapter_meta_notes WHERE chapter_id IN ({placeholders}) ORDER BY created_at, id",
+                            chapter_ids,
+                        ).fetchall()
+                    ]
+                    project["chapter_text_versions"] = [
+                        dict(item) for item in connection.execute(
+                            f"SELECT id, chapter_id, title, created_at, updated_at FROM chapter_text_versions WHERE chapter_id IN ({placeholders}) ORDER BY created_at DESC, id DESC",
+                            chapter_ids,
+                        ).fetchall()
+                    ]
                 tts = connection.execute(
                     "SELECT * FROM tts_settings WHERE project_id=?",
                     (row["id"],),
@@ -507,6 +524,74 @@ class ProjectRepository:
             content_hash=content_hash(next_content),
         )
         return self.get_chapter(project_uuid, chapter_id)
+
+    def _owned_chapter(self, connection: Any, project_uuid: str, chapter_id: int) -> Any:
+        row = connection.execute(
+            "SELECT c.*, p.id AS project_id FROM chapters c JOIN books b ON b.id=c.book_id JOIN projects p ON p.id=b.project_id WHERE p.uuid=? AND c.id=? AND c.archived_at IS NULL",
+            (project_uuid, chapter_id),
+        ).fetchone()
+        if row is None:
+            raise ProjectNotFoundError(f"{project_uuid}/chapter/{chapter_id}")
+        return row
+
+    def create_text_version(self, project_uuid: str, chapter_id: int, title: str = "") -> dict[str, Any]:
+        now = utc_now()
+        with self.database.transaction() as connection:
+            chapter = self._owned_chapter(connection, project_uuid, chapter_id)
+            notes = [dict(row) for row in connection.execute(
+                "SELECT * FROM chapter_meta_notes WHERE chapter_id=? ORDER BY created_at, id", (chapter_id,)
+            ).fetchall()]
+            cursor = connection.execute(
+                "INSERT INTO chapter_text_versions(chapter_id,title,content,notes_json,created_at,updated_at) VALUES(?,?,?,?,?,?)",
+                (chapter_id, title.strip(), chapter["content"], json_text(notes), now, now),
+            )
+            self._touch_project(connection, chapter["project_id"], now)
+            version_id = int(cursor.lastrowid)
+        return self.get_text_version(project_uuid, chapter_id, version_id)
+
+    def get_text_version(self, project_uuid: str, chapter_id: int, version_id: int) -> dict[str, Any]:
+        with self.database.connect() as connection:
+            self._owned_chapter(connection, project_uuid, chapter_id)
+            row = connection.execute("SELECT * FROM chapter_text_versions WHERE id=? AND chapter_id=?", (version_id, chapter_id)).fetchone()
+            if row is None:
+                raise ProjectNotFoundError(f"text-version/{version_id}")
+            result = dict(row)
+            result["notes"] = json_value(result.pop("notes_json"), [])
+            return result
+
+    def rename_text_version(self, project_uuid: str, chapter_id: int, version_id: int, title: str) -> dict[str, Any]:
+        now = utc_now()
+        with self.database.transaction() as connection:
+            self._owned_chapter(connection, project_uuid, chapter_id)
+            cursor = connection.execute("UPDATE chapter_text_versions SET title=?,updated_at=? WHERE id=? AND chapter_id=?", (title.strip(), now, version_id, chapter_id))
+            if not cursor.rowcount: raise ProjectNotFoundError(f"text-version/{version_id}")
+        return self.get_text_version(project_uuid, chapter_id, version_id)
+
+    def delete_text_version(self, project_uuid: str, chapter_id: int, version_id: int) -> None:
+        with self.database.transaction() as connection:
+            self._owned_chapter(connection, project_uuid, chapter_id)
+            if not connection.execute("DELETE FROM chapter_text_versions WHERE id=? AND chapter_id=?", (version_id, chapter_id)).rowcount:
+                raise ProjectNotFoundError(f"text-version/{version_id}")
+
+    def replace_meta_notes(self, project_uuid: str, chapter_id: int, notes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        now = utc_now()
+        with self.database.transaction() as connection:
+            self._owned_chapter(connection, project_uuid, chapter_id)
+            connection.execute("DELETE FROM chapter_meta_notes WHERE chapter_id=?", (chapter_id,))
+            for item in notes:
+                connection.execute(
+                    "INSERT INTO chapter_meta_notes(id,chapter_id,start_offset,end_offset,selected_text,note,color_index,detached,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                    (str(item["id"]), chapter_id, max(0,int(item.get("start", item.get("start_offset",0)))), max(0,int(item.get("end", item.get("end_offset",0)))), str(item.get("selectedText", item.get("selected_text", ""))), str(item.get("note", "")), int(item.get("colorIndex", item.get("color_index",0))), int(bool(item.get("detached"))), item.get("createdAt", item.get("created_at")) or now, now),
+                )
+        with self.database.connect() as connection:
+            return [dict(row) for row in connection.execute("SELECT * FROM chapter_meta_notes WHERE chapter_id=? ORDER BY created_at,id", (chapter_id,)).fetchall()]
+
+    def restore_text_version(self, project_uuid: str, chapter_id: int, version_id: int) -> dict[str, Any]:
+        version = self.get_text_version(project_uuid, chapter_id, version_id)
+        self.create_text_version(project_uuid, chapter_id, "Перед восстановлением")
+        saved = self.update_chapter(project_uuid, chapter_id, content=version["content"])
+        self.replace_meta_notes(project_uuid, chapter_id, version["notes"])
+        return {"chapter": saved, "notes": version["notes"], "restored_version_id": version_id}
 
     def reorder_chapters(self, project_uuid: str, chapter_ids: Iterable[int]) -> None:
         ids = [int(value) for value in chapter_ids]

@@ -229,6 +229,88 @@ class TtsServiceTests(unittest.TestCase):
             [{"text": "Слово", "start": 0.125, "end": 0.5}],
         )
 
+    def test_chunk_watchdog_interrupts_a_stream_that_never_yields(self) -> None:
+        class HungCommunicate:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def stream(self):
+                await __import__("asyncio").Event().wait()
+                if False:
+                    yield {}
+
+        output = self.user_data / "hung.mp3"
+        edge_tts = types.SimpleNamespace(Communicate=HungCommunicate)
+        started = time.monotonic()
+        with (
+            patch.dict(sys.modules, {"edge_tts": edge_tts}),
+            patch("bookender.tts.TTS_STREAM_POLL_SECONDS", 0.005),
+            patch("bookender.tts.TTS_STREAM_STALL_TIMEOUT_SECONDS", 0.03),
+            patch("bookender.tts.TTS_RETRY_ATTEMPTS", 1),
+            self.assertRaises(TimeoutError),
+        ):
+            self.service._synthesize_chunk(
+                "Зависший фрагмент",
+                output,
+                {
+                    "voice": "ru-RU-DmitryNeural",
+                    "rate": "+0%",
+                    "pitch": "+0Hz",
+                    "volume": "+0%",
+                    "provider": "edge-tts",
+                },
+            )
+
+        self.assertLess(time.monotonic() - started, 1.0)
+        self.assertFalse(output.exists())
+
+    def test_long_synthesis_resumes_from_completed_chunk_checkpoints(self) -> None:
+        settings = {
+            "voice": "ru-RU-DmitryNeural",
+            "rate": "+0%",
+            "pitch": "+0Hz",
+            "volume": "+0%",
+            "provider": "edge-tts",
+        }
+        calls: list[str] = []
+        fail_second = True
+
+        def fake_chunk(text, output, settings, **kwargs):
+            nonlocal fail_second
+            calls.append(text)
+            if text == "Второй" and fail_second:
+                raise TimeoutError("provider stalled")
+            output.write_bytes(b"ID3-" + text.encode("utf-8"))
+            return [{"text": text, "start": 0.1, "end": 0.8}]
+
+        def fake_concat(parts, output, **kwargs):
+            output.write_bytes(b"".join(part.read_bytes() for part in parts))
+
+        events: list[str] = []
+        with (
+            patch.object(TtsService, "_split_text_chunks", return_value=["Первый", "Второй"]),
+            patch.object(TtsService, "_synthesize_chunk", side_effect=fake_chunk),
+            patch.object(TtsService, "_audio_duration", return_value=1.0),
+            patch.object(TtsService, "_concat_mp3_files", side_effect=fake_concat),
+            patch("bookender.tts.shutil.which", return_value="ffmpeg"),
+        ):
+            with self.assertRaises(TimeoutError):
+                self.service._synthesize("текст", self.user_data / "first.mp3", settings)
+
+            fail_second = False
+            timings = self.service._synthesize(
+                "текст",
+                self.user_data / "retry.mp3",
+                settings,
+                event_callback=lambda name, message, details: events.append(name),
+            )
+
+        self.assertEqual(calls, ["Первый", "Второй", "Второй"])
+        self.assertIn("chunk_resumed", events)
+        self.assertEqual(timings[0]["text"], "Первый")
+        self.assertEqual(timings[1]["start"], 1.1)
+        self.assertTrue((self.user_data / "retry.mp3").is_file())
+
     def test_generated_audio_persists_exact_word_timings(self) -> None:
         exact = [{"text": "Нейтральный", "start": 0.12, "end": 0.66}]
 

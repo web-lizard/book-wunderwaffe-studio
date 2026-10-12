@@ -1,0 +1,36 @@
+.studio > audio { display: none; }
+.chapter-book-list > button:hover { background-color: rgba(255,255,255,.035); background-image: linear-gradient(var(--chapter-color), var(--chapter-color)); }
+.chapter-book-list > button > span { color: var(--chapter-color); }
+.text-navigator-chapters > button { border-left: 5px solid var(--chapter-color); }
+.text-navigator-chapters > button.active { border-color: var(--chapter-color); background: rgba(255,255,255,.05); }
+.text-navigator-chapters > button > span { color: var(--chapter-color); }
+.chapter-clip { border-color: var(--chapter-color); background: color-mix(in srgb, var(--chapter-color) 14%, #151519); border-top: 3px solid var(--chapter-color); }
+.chapter-clip.active, .chapter-clip.selected { border-color: var(--chapter-color); background: color-mix(in srgb, var(--chapter-color) 28%, #151519); }
+.chapter-navigation { display: flex; align-items: center; gap: 7px; padding: 4px 12px; min-width: 0; border-bottom: 1px solid var(--line); }
+.chapter-navigation button, .chapter-navigation select, .book-export-tabs button, .audio-export-selection-actions button { padding: 5px 9px; background: #18181d; border: 1px solid var(--line); border-radius: 5px; color: var(--text-soft); cursor: pointer; }
+.chapter-navigation .active { color: var(--accent); border-color: var(--accent); }
+.chapter-navigation select { flex: 0 1 360px; min-width: 100px; border-left: 5px solid var(--chapter-color); }
+.chapter-navigation > span { color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.chapter-navigation > button:last-child { margin-left: auto; }
+.text-navigator-modal, .text-navigator-layout, .text-navigator-layout > main { overflow-anchor: none; }
+.text-selection-actions { flex-wrap: wrap; justify-content: flex-end; flex-shrink: 0; max-width: 370px; }
+.text-navigator-toolbar { height: 108px; overflow: hidden; }
+.text-navigator-toolbar > div:first-child { flex: 1; }
+.book-export-tabs { display: flex; gap: 8px; margin: 16px 0; }
+.book-export-tabs button { flex: 1; }
+.book-export-tabs [aria-selected="true"] { border-color: var(--accent); color: var(--accent); }
+.book-audio-export { display: grid; gap: 12px; }
+.book-audio-export > p { color: var(--muted); line-height: 1.5; margin: 0; }
+.audio-export-selection-actions { display: flex; align-items: center; gap: 8px; font-size: 11px; }
+.audio-export-selection-actions > span { margin-left: auto; color: var(--muted); }
+.audio-export-chapters { max-height: 240px; overflow-y: auto; scrollbar-gutter: stable; display: grid; gap: 5px; }
+.audio-export-chapters > label { display: grid; grid-template-columns: auto minmax(0, 1fr); column-gap: 8px; align-items: center; border-left: 5px solid var(--chapter-color); padding: 7px; background: rgba(255,255,255,.025); cursor: pointer; }
+.audio-export-chapters input { grid-row: span 2; accent-color: var(--chapter-color); }
+.audio-export-chapters span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.audio-export-chapters small { color: var(--muted); font-size: 10px; }
+.audio-export-options { display: flex; gap: 12px; }
+.audio-export-options label { display: grid; flex: 1; gap: 5px; color: var(--muted); font-size: 11px; }
+.audio-export-options select { padding: 8px; background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 5px; }
+.audio-export-music { display: flex; gap: 8px; align-items: center; }
+.audio-export-status { display: grid; gap: 8px; overflow-wrap: anywhere; }
+.audio-export-status progress { width: 100%; accent-color: var(--accent); }

@@ -2249,7 +2249,7 @@ input[type="range"] {
   z-index: 15;
   position: relative;
   display: grid;
-  grid-template-rows: 42px minmax(0, 1fr);
+  grid-template-rows: 42px 38px minmax(0, 1fr);
   min-width: 0;
   min-height: 0;
   border-top: 1px solid #2b2b31;
@@ -3260,6 +3260,9 @@ body.resizing-timeline {
 
 .book-export-modal {
   width: min(520px, 94vw);
+  max-height: 94vh;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
   padding: 20px;
   border: 1px solid rgba(var(--accent-rgb), .42);
   border-radius: 14px;
@@ -3623,7 +3626,10 @@ body.resizing-timeline {
   min-height: 0;
   overflow-y: auto;
   padding: 22px clamp(22px, 4vw, 55px) 50px;
-  scroll-behavior: smooth;
+  scroll-behavior: auto;
+  overscroll-behavior: contain;
+  overflow-anchor: none;
+  scrollbar-gutter: stable;
   scrollbar-width: thin;
   scrollbar-color: #44364c #151219;
 }
@@ -4309,7 +4315,11 @@ body.resizing-timeline {
   grid-template-columns: 24px minmax(0, 1fr) 10px;
   grid-template-rows: auto auto;
   width: 100%;
-  padding: 9px 8px;
+  padding: 12px 8px 12px 19px;
+  background-image: linear-gradient(var(--chapter-color), var(--chapter-color));
+  background-size: 6px calc(100% - 16px);
+  background-position: 5px center;
+  background-repeat: no-repeat;
   border: 1px solid transparent;
   border-radius: 7px;
   background: transparent;
@@ -4335,8 +4345,8 @@ body.resizing-timeline {
 .chapter-book-list > button.drop-before::before { top: -2px; }
 .chapter-book-list > button.drop-after::after { bottom: -2px; }
 .chapter-book-list > button.active {
-  border-color: rgba(var(--accent-rgb), .25);
-  background: rgba(var(--accent-rgb), .09);
+  border-color: var(--chapter-color);
+  background-color: rgba(255, 255, 255, .04);
 }
 .chapter-book-list > button > span {
   grid-row: 1 / 3;
@@ -4498,6 +4508,20 @@ body.resizing-timeline {
   line-height: 1.65;
   tab-size: 4;
 }
+.book-text-editor-wrap { position: relative; min-height: 0; }
+.book-text-editor-wrap .book-text-editor { position: absolute; z-index: 2; inset: 0; height: 100%; background: transparent; }
+.book-text-highlights {
+  position: absolute; z-index: 1; inset: 0; overflow: hidden;
+  padding: 18px 20px 26px; border: 1px solid rgba(var(--accent-rgb), .14); border-radius: 12px;
+  background: linear-gradient(145deg, rgba(75, 32, 98, .22), rgba(24, 12, 35, .36)), #0e0a13;
+  color: transparent; font-family: "Cascadia Mono", "Segoe UI Mono", Consolas, monospace;
+  font-size: clamp(14px, 1.05vw, 17px); line-height: 1.65; white-space: pre-wrap; overflow-wrap: break-word; tab-size: 4;
+}
+.book-text-highlights mark { color: transparent; border-radius: 3px; box-shadow: inset 0 -1px rgba(255,255,255,.18); }
+.meta-note-selection-action { position: absolute; z-index: 4; top: 9px; right: 25px; padding: 5px 9px; border: 1px solid rgba(var(--accent-rgb),.45); border-radius: 5px; background: #24152f; color: #dec8ed; font-size: 9px; cursor: pointer; }
+.meta-note-popover { position: absolute; z-index: 5; top: 42px; right: 25px; display: grid; grid-template-columns: 1fr 1fr 25px; gap: 4px; width: min(300px, calc(100% - 50px)); padding: 8px; border: 1px solid rgba(var(--accent-rgb),.5); border-radius: 7px; background: #17101e; box-shadow: 0 12px 30px rgba(0,0,0,.45); }
+.meta-note-popover textarea { grid-column: 1 / -1; resize: vertical; border: 1px solid #39303f; border-radius: 5px; background: #0e0a13; color: var(--text); font: 11px/1.4 "Segoe UI", sans-serif; }
+.meta-note-popover button { border: 1px solid #39303f; border-radius: 4px; background: #211628; color: var(--text-soft); font-size: 9px; cursor: pointer; }
 
 .reading-caption {
   z-index: 13;
@@ -4834,6 +4858,22 @@ body.resizing-timeline {
 .book-inspector details > .field-label { margin-top: 8px; }
 .book-inspector details > button { margin-top: 8px; }
 .book-inspector textarea { resize: vertical; }
+.book-meta-list, .book-version-list { display: grid; gap: 6px; }
+.book-meta-list > p { color: var(--muted); font-size: 9px; line-height: 1.45; }
+.book-meta-list article, .book-version-list article { display: grid; grid-template-columns: minmax(0,1fr) 26px 26px; gap: 3px; padding: 4px; border: 1px solid #29292f; border-radius: 6px; }
+.book-meta-list article.detached { border-color: rgba(211,94,88,.35); }
+.book-version-list article.active { border-color: rgba(var(--accent-rgb),.55); background: rgba(var(--accent-rgb),.08); }
+.book-meta-list article > button:first-child, .book-version-list article > button:first-child { display: flex; align-items: center; gap: 7px; min-width: 0; border: 0; background: transparent; color: var(--text-soft); text-align: left; cursor: pointer; }
+.book-meta-list article i { flex: 0 0 7px; width: 7px; height: 24px; border-radius: 4px; }
+.book-meta-list article span, .book-version-list article > button:first-child { min-width: 0; }
+.book-meta-list article b, .book-meta-list article small, .book-version-list article b, .book-version-list article small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 9px; }
+.book-meta-list article small, .book-version-list article small { color: var(--muted); font-size: 8px; }
+.book-meta-list article > button:not(:first-child), .book-version-list article > button:not(:first-child) { padding: 0; border: 1px solid #303037; border-radius: 4px; background: #17171b; color: var(--muted); cursor: pointer; }
+.book-version-list article { grid-template-columns: minmax(0,1fr) 26px 26px 26px; }
+.text-version-save { width: calc(100% - 20px); margin-bottom: 8px; }
+.current-text-version { margin: 0 10px; color: #75b996; font-size: 9px; }
+.text-version-preview { max-height: 190px; overflow: auto; padding: 8px; border: 1px solid rgba(var(--accent-rgb),.25); border-radius: 6px; color: var(--text-soft); }
+.text-version-preview pre { margin: 6px 0 0; white-space: pre-wrap; font: 9px/1.5 "Cascadia Mono", monospace; }
 .book-tts-panel,
 .book-audio-list {
   display: grid;

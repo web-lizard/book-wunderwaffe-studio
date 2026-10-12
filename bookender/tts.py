@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import hashlib
 import importlib.util
 import json
 import queue as queue_module
@@ -24,6 +26,9 @@ DEFAULT_VOICE = "ru-RU-SvetlanaNeural"
 TTS_CHUNK_LIMIT = 2_400
 TTS_CONNECT_TIMEOUT_SECONDS = 12
 TTS_RECEIVE_TIMEOUT_SECONDS = 30
+TTS_STREAM_POLL_SECONDS = 0.5
+TTS_STREAM_STALL_TIMEOUT_SECONDS = 90
+TTS_CHUNK_MAX_SECONDS = 600
 TTS_RETRY_ATTEMPTS = 3
 TTS_MAX_PARALLEL_CHAPTERS = 2
 TTS_DIAGNOSTIC_LIMIT = 120
@@ -829,6 +834,7 @@ class TtsService:
                     """,
                     (now, now, job_uuid),
                 )
+            self._clear_chunk_checkpoints(chapter["content"], output, settings)
             log_event(
                 "tts_job_finished",
                 job_uuid=job_uuid,
@@ -1030,10 +1036,13 @@ class TtsService:
         if not ffmpeg:
             raise RuntimeError("FFmpeg is required to join long TTS chapters")
         token = uuidlib.uuid4().hex
-        parts = [
-            output.with_name(f".{output.stem}-{token}-{index:04d}.mp3")
-            for index in range(len(chunks))
+        cache_dir = output.parent / ".tts-checkpoints"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        checkpoint_paths = [
+            cls._chunk_checkpoint_paths(cache_dir, chunk, settings)
+            for chunk in chunks
         ]
+        parts = [audio_path for audio_path, _ in checkpoint_paths]
         concat_file = output.with_name(f".{output.stem}-{token}-concat.txt")
         word_timings: list[dict[str, Any]] = []
         audio_cursor = 0.0
@@ -1046,21 +1055,42 @@ class TtsService:
                     chunk=index + 1,
                     total=total,
                 )
-                chunk_options = {
-                    "progress_callback": lambda fraction, done=index: report(
-                        done, fraction
+                checkpoint = cls._load_chunk_checkpoint(*checkpoint_paths[index])
+                if checkpoint is not None:
+                    chunk_timings, part_duration = checkpoint
+                    event(
+                        "chunk_resumed",
+                        f"Фрагмент {index + 1} из {total} восстановлен из контрольной точки",
+                        chunk=index + 1,
+                        total=total,
+                        bytes=part.stat().st_size,
                     )
-                }
-                if event_callback is not None:
-                    chunk_options["event_callback"] = event_callback
-                if cancel_check is not None:
-                    chunk_options["cancel_check"] = cancel_check
-                chunk_timings = cls._synthesize_chunk(
-                    chunk,
-                    part,
-                    settings,
-                    **chunk_options,
-                ) or []
+                else:
+                    chunk_options = {
+                        "progress_callback": lambda fraction, done=index: report(
+                            done, fraction
+                        )
+                    }
+                    if event_callback is not None:
+                        chunk_options["event_callback"] = event_callback
+                    if cancel_check is not None:
+                        chunk_options["cancel_check"] = cancel_check
+                    chunk_timings = cls._synthesize_chunk(
+                        chunk,
+                        part,
+                        settings,
+                        **chunk_options,
+                    ) or []
+                    part_duration = cls._audio_duration(part)
+                    if not part_duration and chunk_timings:
+                        part_duration = max(
+                            float(timing.get("end") or 0) for timing in chunk_timings
+                        )
+                    cls._save_chunk_checkpoint(
+                        checkpoint_paths[index][1],
+                        chunk_timings,
+                        float(part_duration or 0),
+                    )
                 word_timings.extend(
                     {
                         **timing,
@@ -1069,11 +1099,6 @@ class TtsService:
                     }
                     for timing in chunk_timings
                 )
-                part_duration = cls._audio_duration(part)
-                if not part_duration and chunk_timings:
-                    part_duration = max(
-                        float(timing.get("end") or 0) for timing in chunk_timings
-                    )
                 audio_cursor += max(0.0, float(part_duration or 0))
                 report(index + 1)
                 event(
@@ -1089,8 +1114,83 @@ class TtsService:
             return word_timings
         finally:
             concat_file.unlink(missing_ok=True)
-            for part in parts:
-                part.unlink(missing_ok=True)
+
+    @staticmethod
+    def _chunk_checkpoint_paths(
+        cache_dir: Path, text: str, settings: dict[str, str]
+    ) -> tuple[Path, Path]:
+        identity = json.dumps(
+            {
+                "schema": 1,
+                "text": text,
+                "provider": settings.get("provider", ""),
+                "voice": settings.get("voice", ""),
+                "rate": settings.get("rate", ""),
+                "pitch": settings.get("pitch", ""),
+                "volume": settings.get("volume", ""),
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        digest = hashlib.sha256(identity).hexdigest()
+        return cache_dir / f"{digest}.mp3", cache_dir / f"{digest}.json"
+
+    @staticmethod
+    def _load_chunk_checkpoint(
+        audio_path: Path, metadata_path: Path
+    ) -> tuple[list[dict[str, Any]], float] | None:
+        try:
+            if not audio_path.is_file() or audio_path.stat().st_size <= 0:
+                return None
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            if metadata.get("schema") != 1:
+                return None
+            timings = metadata.get("word_timings")
+            if not isinstance(timings, list):
+                return None
+            duration = max(0.0, float(metadata.get("duration") or 0))
+            return timings, duration
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            return None
+
+    @staticmethod
+    def _save_chunk_checkpoint(
+        metadata_path: Path,
+        word_timings: list[dict[str, Any]],
+        duration: float,
+    ) -> None:
+        metadata_temp = metadata_path.with_name(
+            f".{metadata_path.stem}-{uuidlib.uuid4().hex}.tmp.json"
+        )
+        try:
+            metadata_temp.write_text(
+                json.dumps(
+                    {
+                        "schema": 1,
+                        "duration": max(0.0, float(duration)),
+                        "word_timings": word_timings,
+                    },
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ),
+                encoding="utf-8",
+            )
+            metadata_temp.replace(metadata_path)
+        finally:
+            metadata_temp.unlink(missing_ok=True)
+
+    @classmethod
+    def _clear_chunk_checkpoints(
+        cls, text: str, output: Path, settings: dict[str, str]
+    ) -> None:
+        cache_dir = output.parent / ".tts-checkpoints"
+        for chunk in cls._split_text_chunks(text):
+            for checkpoint in cls._chunk_checkpoint_paths(cache_dir, chunk, settings):
+                with contextlib.suppress(OSError):
+                    checkpoint.unlink(missing_ok=True)
+        with contextlib.suppress(OSError):
+            cache_dir.rmdir()
 
     @staticmethod
     def _concat_mp3_files(
@@ -1189,13 +1289,17 @@ class TtsService:
             if cancel_check is not None and cancel_check():
                 raise TtsCancelledError("Narration cancelled")
 
+        stream_activity_at = time.monotonic()
+
         async def stream_to_file(communicate: Any) -> list[dict[str, Any]]:
+            nonlocal stream_activity_at
             spoken_characters = 0
             received_bytes = 0
             first_audio_received = False
             word_timings: list[dict[str, Any]] = []
             with output.open("wb") as audio:
                 async for message in communicate.stream():
+                    stream_activity_at = time.monotonic()
                     ensure_not_cancelled()
                     if message["type"] == "audio":
                         audio.write(message["data"])
@@ -1229,6 +1333,36 @@ class TtsService:
             event("audio_received", "Аудиофрагмент получен", bytes=received_bytes)
             return word_timings
 
+        async def guarded_stream(communicate: Any) -> list[dict[str, Any]]:
+            nonlocal stream_activity_at
+            stream_activity_at = time.monotonic()
+            started_at = stream_activity_at
+            task = asyncio.create_task(stream_to_file(communicate))
+            try:
+                while True:
+                    done, _ = await asyncio.wait(
+                        {task}, timeout=TTS_STREAM_POLL_SECONDS
+                    )
+                    if done:
+                        return task.result()
+                    ensure_not_cancelled()
+                    now = time.monotonic()
+                    if now - stream_activity_at >= TTS_STREAM_STALL_TIMEOUT_SECONDS:
+                        raise TimeoutError(
+                            "TTS stream produced no data for "
+                            f"{TTS_STREAM_STALL_TIMEOUT_SECONDS} seconds"
+                        )
+                    if now - started_at >= TTS_CHUNK_MAX_SECONDS:
+                        raise TimeoutError(
+                            "TTS chunk exceeded the hard limit of "
+                            f"{TTS_CHUNK_MAX_SECONDS} seconds"
+                        )
+            finally:
+                if not task.done():
+                    task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError, Exception):
+                        await task
+
         last_error: Exception | None = None
         for attempt in range(TTS_RETRY_ATTEMPTS):
             ensure_not_cancelled()
@@ -1251,7 +1385,7 @@ class TtsService:
                     connect_timeout=TTS_CONNECT_TIMEOUT_SECONDS,
                     receive_timeout=TTS_RECEIVE_TIMEOUT_SECONDS,
                 )
-                word_timings = asyncio.run(stream_to_file(communicate))
+                word_timings = asyncio.run(guarded_stream(communicate))
                 if output.is_file() and output.stat().st_size > 0:
                     if progress_callback:
                         progress_callback(1.0)

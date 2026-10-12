@@ -1,6 +1,8 @@
 import { createApp } from 'vue'
 import App from './App.vue'
 import './style.css'
+import './navigation.css'
+import './visualInserts.css'
 
 const app = createApp(App)
 

@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Book Wunderwaffe Pocket</string>
+    <string name="notification_channel_name">Озвучивание книг</string>
+    <string name="notification_channel_description">Прогресс фонового создания аудиокниги</string>
+</resources>

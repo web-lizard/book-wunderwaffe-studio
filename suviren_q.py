@@ -32,6 +32,8 @@ import time
 from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Any, Callable, Optional
+from bookender.visual_inserts import compile_scene_plan
+from bookender.visual_render import prepare_visual_content, visual_filter_chain
 
 APP_NAME = "book-wunderwaffe-studio"
 APP_VERSION = "3.0.0"
@@ -1516,6 +1518,7 @@ def draw_panel(
     animated_visuals: bool = False,
     timeline_duration: Optional[float] = None,
     editor_project: Optional[dict[str, Any]] = None,
+    chrome_out: Optional[Path] = None,
 ) -> None:
     from PIL import Image, ImageDraw, ImageFilter, ImageOps
 
@@ -1812,6 +1815,12 @@ def draw_panel(
         fill=(*text_dim, 180),
     )
 
+    if chrome_out is not None:
+        # The replaceable composition is kept underneath permanent chrome.
+        img.convert("RGB").save(out, "PNG")
+        _draw_telegram_qr(chrome_layer, font, accent).save(chrome_out, "PNG")
+        return
+
     img = Image.alpha_composite(img, chrome_layer)
 
     # QR is deliberately last: its modules and quiet zone must never be blurred
@@ -1837,6 +1846,7 @@ def render_panels(
     animated_visuals: bool = False,
     timeline_duration: Optional[float] = None,
     editor_project: Optional[dict[str, Any]] = None,
+    separate_chrome: bool = False,
 ) -> list[Path]:
     ensure_pillow(auto_install=False)
     ensure_dir(out_dir)
@@ -1863,6 +1873,7 @@ def render_panels(
             animated_visuals=animated_visuals,
             timeline_duration=timeline_duration,
             editor_project=editor_project,
+            chrome_out=out_dir / f"{i:03d}-chrome.png" if separate_chrome else None,
         )
         paths.append(out)
     return paths
@@ -2044,6 +2055,114 @@ def _render_segment_worker(args: dict[str, Any]) -> dict[str, Any]:
     filter_parts: list[str] = [f"[0:v]scale={width}:{height},setsar=1,format=rgba[base]"]
     current_label = "base"
 
+    def add_captions() -> None:
+        nonlocal current_label
+        if (
+            captions.get("enabled") is True
+            and captions.get("visible") is not False
+            and caption_text.strip()
+        ):
+            font_value = args.get("font")
+            try:
+                caption_weight = int(captions.get("fontWeight") or 400)
+            except (TypeError, ValueError):
+                caption_weight = 400
+            default_font_name = "segoeuil.ttf" if caption_weight <= 300 else "segoeui.ttf"
+            font_path = (
+                Path(font_value)
+                if font_value
+                else Path(os.environ.get("SystemRoot", "C:\\Windows"))
+                / "Fonts"
+                / default_font_name
+            )
+            if not font_path.is_file() and not font_value:
+                font_path = (
+                    Path(os.environ.get("SystemRoot", "C:\\Windows"))
+                    / "Fonts"
+                    / "segoeui.ttf"
+                )
+            if font_path.is_file():
+                escaped_font = (
+                    str(font_path.resolve())
+                    .replace("\\", "/")
+                    .replace(":", "\\:")
+                    .replace("'", "\\'")
+                )
+                try:
+                    words_per_card = int(captions.get("wordsPerCard") or 14)
+                except (TypeError, ValueError):
+                    words_per_card = 14
+                try:
+                    caption_font_size = float(captions.get("fontSize", 28))
+                except (TypeError, ValueError):
+                    caption_font_size = 28
+
+                def caption_number(key: str, default: float) -> float:
+                    try:
+                        return float(captions.get(key, default))
+                    except (TypeError, ValueError):
+                        return default
+
+                caption_width_percent = max(5, min(100, caption_number("w", 72)))
+                caption_height_percent = max(5, min(100, caption_number("h", 18)))
+                caption_x_percent = max(
+                    0,
+                    min(100 - caption_width_percent, caption_number("x", 14)),
+                )
+                caption_y_percent = max(
+                    0,
+                    min(100 - caption_height_percent, caption_number("y", 69)),
+                )
+                caption_background = caption_number("backgroundOpacity", 0.68)
+                caption_background = max(0, min(0.9, caption_background))
+                caption_size = max(12, round(max(16, min(48, caption_font_size)) * height / 1080))
+                caption_x = round(width * caption_x_percent / 100)
+                caption_y = round(height * caption_y_percent / 100)
+                caption_width = round(width * caption_width_percent / 100)
+                caption_height = round(height * caption_height_percent / 100)
+                caption_line_width = max(18, round(caption_width / max(1, caption_size * 0.58)))
+                border = max(12, round(width * 0.012))
+                for index, (caption_start, caption_end, caption) in enumerate(
+                    reading_caption_chunks(
+                        caption_text,
+                        duration,
+                        words_per_card=words_per_card,
+                        line_width=caption_line_width,
+                        word_timings=caption_word_timings,
+                        timeline_start=start,
+                        source_start=caption_source_start,
+                        playback_rate=caption_playback_rate,
+                    )
+                ):
+                    next_label = f"with_caption_{index}"
+                    filter_parts.append(
+                        f"[{current_label}]drawtext=fontfile='{escaped_font}':"
+                        f"text='{escape_drawtext_text(caption)}':"
+                        f"fontcolor=white:fontsize={caption_size}:"
+                        f"x={caption_x}+({caption_width}-text_w)/2:"
+                        f"y={caption_y}+({caption_height}-text_h)/2:"
+                        f"line_spacing={max(5, round(caption_size * .22))}:"
+                        f"box=1:boxcolor=black@{caption_background:.2f}:"
+                        f"boxborderw={border}:fix_bounds=1:"
+                        f"enable='between(t,{caption_start:.3f},{caption_end:.3f})'"
+                        f"[{next_label}]"
+                    )
+                    current_label = next_label
+
+    visual_clips = list(args.get("visual_inserts") or [])
+    if visual_clips:
+        add_captions()
+        visual_parts, current_label = visual_filter_chain(
+            visual_clips, start=start, duration=duration, input_offset=2, base_label=current_label,
+        )
+        filter_parts.extend(visual_parts)
+    if args.get("chrome"):
+        chrome_index = 2 + len(visual_clips)
+        filter_parts.append(
+            f"[{current_label}][{chrome_index}:v]overlay=0:0:format=auto[with_chrome]"
+        )
+        current_label = "with_chrome"
+
     if waveform_visible:
         wave_x = percent_pixel("x", 38.0, width)
         wave_y = percent_pixel("y", 59.0, height)
@@ -2078,7 +2197,7 @@ def _render_segment_worker(args: dict[str, Any]) -> dict[str, Any]:
                     "colorchannelmixer=aa=0.94[wave_bars]"
                 ),
                 (
-                    f"[base][wave_bars]overlay=x={wave_x}:y={wave_y}:"
+                    f"[{current_label}][wave_bars]overlay=x={wave_x}:y={wave_y}:"
                     "shortest=0:eof_action=pass:repeatlast=0:format=auto[with_wave]"
                 ),
             ]
@@ -2131,100 +2250,11 @@ def _render_segment_worker(args: dict[str, Any]) -> dict[str, Any]:
             )
             current_label = "with_time"
 
-    if (
-        captions.get("enabled") is True
-        and captions.get("visible") is not False
-        and caption_text.strip()
-    ):
-        font_value = args.get("font")
-        try:
-            caption_weight = int(captions.get("fontWeight") or 400)
-        except (TypeError, ValueError):
-            caption_weight = 400
-        default_font_name = "segoeuil.ttf" if caption_weight <= 300 else "segoeui.ttf"
-        font_path = (
-            Path(font_value)
-            if font_value
-            else Path(os.environ.get("SystemRoot", "C:\\Windows"))
-            / "Fonts"
-            / default_font_name
-        )
-        if not font_path.is_file() and not font_value:
-            font_path = (
-                Path(os.environ.get("SystemRoot", "C:\\Windows"))
-                / "Fonts"
-                / "segoeui.ttf"
-            )
-        if font_path.is_file():
-            escaped_font = (
-                str(font_path.resolve())
-                .replace("\\", "/")
-                .replace(":", "\\:")
-                .replace("'", "\\'")
-            )
-            try:
-                words_per_card = int(captions.get("wordsPerCard") or 14)
-            except (TypeError, ValueError):
-                words_per_card = 14
-            try:
-                caption_font_size = float(captions.get("fontSize", 28))
-            except (TypeError, ValueError):
-                caption_font_size = 28
-
-            def caption_number(key: str, default: float) -> float:
-                try:
-                    return float(captions.get(key, default))
-                except (TypeError, ValueError):
-                    return default
-
-            caption_width_percent = max(5, min(100, caption_number("w", 72)))
-            caption_height_percent = max(5, min(100, caption_number("h", 18)))
-            caption_x_percent = max(
-                0,
-                min(100 - caption_width_percent, caption_number("x", 14)),
-            )
-            caption_y_percent = max(
-                0,
-                min(100 - caption_height_percent, caption_number("y", 69)),
-            )
-            caption_background = caption_number("backgroundOpacity", 0.68)
-            caption_background = max(0, min(0.9, caption_background))
-            caption_size = max(12, round(max(16, min(48, caption_font_size)) * height / 1080))
-            caption_x = round(width * caption_x_percent / 100)
-            caption_y = round(height * caption_y_percent / 100)
-            caption_width = round(width * caption_width_percent / 100)
-            caption_height = round(height * caption_height_percent / 100)
-            caption_line_width = max(18, round(caption_width / max(1, caption_size * 0.58)))
-            border = max(12, round(width * 0.012))
-            for index, (caption_start, caption_end, caption) in enumerate(
-                reading_caption_chunks(
-                    caption_text,
-                    duration,
-                    words_per_card=words_per_card,
-                    line_width=caption_line_width,
-                    word_timings=caption_word_timings,
-                    timeline_start=start,
-                    source_start=caption_source_start,
-                    playback_rate=caption_playback_rate,
-                )
-            ):
-                next_label = f"with_caption_{index}"
-                filter_parts.append(
-                    f"[{current_label}]drawtext=fontfile='{escaped_font}':"
-                    f"text='{escape_drawtext_text(caption)}':"
-                    f"fontcolor=white:fontsize={caption_size}:"
-                    f"x={caption_x}+({caption_width}-text_w)/2:"
-                    f"y={caption_y}+({caption_height}-text_h)/2:"
-                    f"line_spacing={max(5, round(caption_size * .22))}:"
-                    f"box=1:boxcolor=black@{caption_background:.2f}:"
-                    f"boxborderw={border}:fix_bounds=1:"
-                    f"enable='between(t,{caption_start:.3f},{caption_end:.3f})'"
-                    f"[{next_label}]"
-                )
-                current_label = next_label
+    if not visual_clips:
+        add_captions()
 
     filter_complex: Optional[str] = None
-    if animated_visuals or (
+    if args.get("chrome") or visual_clips or animated_visuals or (
         captions.get("enabled") is True
         and captions.get("visible") is not False
         and caption_text.strip()
@@ -2263,6 +2293,10 @@ def _render_segment_worker(args: dict[str, Any]) -> dict[str, Any]:
             "-t", f"{duration * caption_playback_rate:.6f}",
             "-i", str(audio),
         ]
+        for clip in visual_clips:
+            cmd += ["-loop", "1", "-framerate", str(fps), "-i", str(clip["path"])]
+        if args.get("chrome"):
+            cmd += ["-loop", "1", "-framerate", str(fps), "-i", str(args["chrome"])]
         if filter_complex:
             cmd += ["-filter_complex", filter_complex, "-map", "[v]"]
         else:
@@ -2516,8 +2550,10 @@ def build_music_timeline_filter(
         clip_duration = max(0.05, float(clip["duration"]))
         delay_ms = max(0, round(float(clip["timeline_start"]) * 1000))
         clip_volume = bounded(clip, "volume", 1.0, 0.0, 2.0)
-        fade_duration = min(0.35, max(0.03, clip_duration / 4))
-        fade_out_start = max(0.0, clip_duration - fade_duration)
+        original_duration = float(clip.get("original_duration", clip_duration))
+        elapsed = float(clip.get("clip_elapsed", 0.0))
+        fade_duration = min(0.35, max(0.03, original_duration / 4))
+        fade_out_start = max(0.0, original_duration - fade_duration)
         label = f"music{index}"
         filters.append(
             f"[{index + music_input_start_index}:a]aresample=48000,asetpts=PTS-STARTPTS,"
@@ -2526,8 +2562,10 @@ def build_music_timeline_filter(
             f"equalizer=f=1100:t=q:w=1:g={mid:.2f},"
             f"equalizer=f=7000:t=q:w=1:g={treble:.2f},"
             f"volume={track_volume * clip_volume:.4f},"
+            f"asetpts=PTS+{elapsed:.6f}/TB,"
             f"afade=t=in:st=0:d={fade_duration:.3f},"
             f"afade=t=out:st={fade_out_start:.3f}:d={fade_duration:.3f},"
+            "asetpts=PTS-STARTPTS,"
             f"adelay={delay_ms}:all=1,apad=whole_dur={duration:.6f}[{label}]"
         )
         labels.append(f"[{label}]")
@@ -2565,6 +2603,8 @@ def prepare_music_clips(
             **clip,
             "timeline_start": overlap_start - start,
             "duration": overlap_end - overlap_start,
+            "original_duration": clip_end - clip_start,
+            "clip_elapsed": overlap_start - clip_start,
             "source_offset": max(
                 0.0,
                 float(clip.get("sourceOffset", 0.0)) + overlap_start - clip_start,
@@ -2684,7 +2724,10 @@ def render_audio_master(
         duration=duration,
         voice_input_index=0,
     )
-    cmd = ["ffmpeg", "-y", "-i", str(audio)]
+    cmd = ["ffmpeg", "-y", "-nostdin"]
+    if not narration_filter:
+        cmd += ["-ss", f"{max(0.0, start):.6f}"]
+    cmd += ["-i", str(audio)]
     config = dict(music_config or {})
     prepared_clips = prepare_music_clips(
         music_clips,
@@ -2730,10 +2773,14 @@ def render_audio_master(
         cmd += ["-filter_complex", narration_filter, "-map", "[voice]"]
     else:
         cmd += ["-map", "0:a:0"]
+    # Lossless chapter intermediates allow a complete book to be encoded to
+    # MP3 once, without accumulating encoder padding at every chapter join.
+    codec_args = ["-c:a", "flac", "-compression_level", "1"] if out.suffix.lower() == ".flac" else [
+        "-c:a", "libmp3lame", "-b:a", audio_bitrate,
+    ]
     cmd += [
-        "-vn",
-        "-c:a", "libmp3lame",
-        "-b:a", audio_bitrate,
+        "-vn", *codec_args,
+        "-ac", "2",
         "-ar", "48000",
         "-t", f"{duration:.6f}",
         "-shortest",
@@ -3122,6 +3169,23 @@ def cmd_render(args: argparse.Namespace) -> None:
     panels_dir = ensure_dir(bdir / "panels")
     segments_dir = ensure_dir(bdir / "segments")
 
+    # The editor previews this exact plan via /api/scene-plan. It is compiled
+    # from source on export, never trusted as a potentially stale saved cache.
+    scene_plan = compile_scene_plan(editor_project)
+    for issue in scene_plan["issues"]:
+        if issue["reason"] == "missing-image":
+            fail(f"Visual insert {issue['id']} has no image in Materials")
+    try:
+        visual_content = prepare_visual_content(
+            scene_plan, editor_project, panels_dir,
+            width=args.width, height=args.height,
+            editor_path=Path(args.editor_project).resolve() if getattr(args, "editor_project", None) else None,
+            font=Path(args.font) if args.font else None,
+            render_end=render_end,
+        )
+    except (ValueError, OSError) as exc:
+        fail(str(exc))
+
     # GPU detection
     gpu_name, gpu_enc = detect_gpu_encoder()
     gpu_codec = gpu_enc["codec"]
@@ -3151,6 +3215,7 @@ def cmd_render(args: argparse.Namespace) -> None:
         animated_visuals=args.waveform == "ffmpeg",
         timeline_duration=timeline_duration,
         editor_project=editor_project,
+        separate_chrome=bool(visual_content),
     )
 
     # Build segment args
@@ -3213,6 +3278,8 @@ def cmd_render(args: argparse.Namespace) -> None:
         )
         segment_args_list.append({
             "panel": str(panel),
+            "chrome": str(panels_dir / f"{i:03d}-chrome.png") if visual_content else None,
+            "visual_inserts": [clip for clip in visual_content if clip["start"] < segment_end and clip["end"] > segment_start],
             "audio": str(audio),
             "out": str(segment),
             "start": segment_start,

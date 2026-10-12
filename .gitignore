@@ -21,6 +21,9 @@ env/
 
 # User data — needs manual setup after clone
 data/
+# Android's Java package is source code, not runtime user data.
+!android/app/src/main/java/com/templeoflizard/bookwunderwaffe/pocket/data/
+!android/app/src/main/java/com/templeoflizard/bookwunderwaffe/pocket/data/*.java
 user_data/
 backups/
 logs/
@@ -61,6 +64,8 @@ render.lock
 node_modules/
 ui/node_modules/
 ui/dist/
+ui/test-results/
+ui/playwright-report/
 
 # Windows shortcuts (local user paths)
 *.lnk

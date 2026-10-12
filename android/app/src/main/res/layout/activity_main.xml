@@ -1,0 +1,916 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/bg"
+    android:orientation="vertical">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="64dp"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingStart="16dp"
+        android:paddingEnd="16dp">
+
+        <LinearLayout
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:orientation="vertical">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:fontFamily="sans-serif-medium"
+                android:letterSpacing="0.08"
+                android:text="BOOK WUNDERWAFFE"
+                android:textColor="@color/text"
+                android:textSize="15sp" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="2dp"
+                android:text="Книги и голос — прямо в кармане"
+                android:textColor="@color/muted"
+                android:textSize="11sp" />
+        </LinearLayout>
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:background="@drawable/pill_background"
+            android:fontFamily="sans-serif-medium"
+            android:text="POCKET · LITE"
+            android:textColor="@color/accent"
+            android:textSize="10sp" />
+    </LinearLayout>
+
+    <View
+        android:layout_width="match_parent"
+        android:layout_height="1dp"
+        android:background="@color/line" />
+
+    <ViewFlipper
+        android:id="@+id/content_flipper"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1">
+
+        <!-- КНИГИ -->
+        <ScrollView
+            android:id="@+id/page_books"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:clipToPadding="false"
+            android:fillViewport="true"
+            android:overScrollMode="never">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:paddingStart="16dp"
+                android:paddingTop="14dp"
+                android:paddingEnd="16dp"
+                android:paddingBottom="26dp">
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:background="@drawable/section_header_background"
+                    android:orientation="vertical"
+                    android:padding="16dp">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:fontFamily="sans-serif-medium"
+                        android:letterSpacing="0.12"
+                        android:text="ЛОКАЛЬНАЯ БИБЛИОТЕКА"
+                        android:textColor="@color/aqua"
+                        android:textSize="10sp" />
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="5dp"
+                        android:fontFamily="sans-serif-light"
+                        android:text="Ваши книги"
+                        android:textColor="@color/text"
+                        android:textSize="27sp" />
+
+                    <TextView
+                        android:id="@+id/books_summary"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="7dp"
+                        android:text="Создайте первую книгу — всё хранится на устройстве."
+                        android:textColor="@color/text_soft"
+                        android:textSize="13sp" />
+                </LinearLayout>
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="12dp"
+                    android:background="@drawable/panel_background"
+                    android:orientation="vertical"
+                    android:padding="14dp">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:fontFamily="sans-serif-medium"
+                        android:text="Книга"
+                        android:textColor="@color/text"
+                        android:textSize="16sp" />
+
+                    <Spinner
+                        android:id="@+id/book_spinner"
+                        android:layout_width="match_parent"
+                        android:layout_height="48dp"
+                        android:layout_marginTop="10dp"
+                        android:background="@drawable/input_background"
+                        android:paddingStart="10dp"
+                        android:paddingEnd="10dp"
+                        android:popupBackground="@color/panel_raised"
+                        android:spinnerMode="dialog" />
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="10dp"
+                        android:baselineAligned="false"
+                        android:orientation="horizontal">
+
+                        <Button
+                            android:id="@+id/book_new_button"
+                            style="@style/PocketButton.Primary"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_marginEnd="5dp"
+                            android:layout_weight="1"
+                            android:text="＋ Новая" />
+
+                        <Button
+                            android:id="@+id/book_rename_button"
+                            style="@style/PocketButton"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_marginStart="5dp"
+                            android:layout_weight="1"
+                            android:text="Переименовать" />
+                    </LinearLayout>
+                </LinearLayout>
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="12dp"
+                    android:background="@drawable/panel_background"
+                    android:orientation="vertical"
+                    android:padding="14dp">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:fontFamily="sans-serif-medium"
+                        android:text="Главы"
+                        android:textColor="@color/text"
+                        android:textSize="16sp" />
+
+                    <TextView
+                        android:id="@+id/chapter_count_label"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="3dp"
+                        android:text="Нет глав"
+                        android:textColor="@color/muted"
+                        android:textSize="12sp" />
+
+                    <Spinner
+                        android:id="@+id/chapter_spinner"
+                        android:layout_width="match_parent"
+                        android:layout_height="48dp"
+                        android:layout_marginTop="10dp"
+                        android:background="@drawable/input_background"
+                        android:paddingStart="10dp"
+                        android:paddingEnd="10dp"
+                        android:popupBackground="@color/panel_raised"
+                        android:spinnerMode="dialog" />
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="10dp"
+                        android:baselineAligned="false"
+                        android:orientation="horizontal">
+
+                        <Button
+                            android:id="@+id/chapter_new_button"
+                            style="@style/PocketButton.Primary"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_marginEnd="5dp"
+                            android:layout_weight="1"
+                            android:text="＋ Добавить" />
+
+                        <Button
+                            android:id="@+id/chapter_rename_button"
+                            style="@style/PocketButton"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_marginStart="5dp"
+                            android:layout_weight="1"
+                            android:text="Переименовать" />
+                    </LinearLayout>
+                </LinearLayout>
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="12dp"
+                    android:background="@drawable/panel_background"
+                    android:orientation="vertical"
+                    android:padding="14dp">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:fontFamily="sans-serif-medium"
+                        android:text="Перенос и резервная копия"
+                        android:textColor="@color/text"
+                        android:textSize="16sp" />
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="5dp"
+                        android:text="Формат .bwlbook уже готов для обмена с будущим настольным приложением."
+                        android:textColor="@color/text_soft"
+                        android:textSize="12sp" />
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="10dp"
+                        android:baselineAligned="false"
+                        android:orientation="horizontal">
+
+                        <Button
+                            android:id="@+id/import_book_button"
+                            style="@style/PocketButton"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_marginEnd="5dp"
+                            android:layout_weight="1"
+                            android:text="Импорт" />
+
+                        <Button
+                            android:id="@+id/export_book_button"
+                            style="@style/PocketButton"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_marginStart="5dp"
+                            android:layout_weight="1"
+                            android:text="Экспорт" />
+                    </LinearLayout>
+                </LinearLayout>
+            </LinearLayout>
+        </ScrollView>
+
+        <!-- ТЕКСТ И ОЗВУЧКА -->
+        <ScrollView
+            android:id="@+id/page_text"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:clipToPadding="false"
+            android:fillViewport="true"
+            android:overScrollMode="never">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:paddingStart="16dp"
+                android:paddingTop="14dp"
+                android:paddingEnd="16dp"
+                android:paddingBottom="26dp">
+
+                <TextView
+                    android:id="@+id/editor_context_label"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:fontFamily="sans-serif-medium"
+                    android:text="Выберите книгу и главу"
+                    android:textColor="@color/text"
+                    android:textSize="20sp" />
+
+                <TextView
+                    android:id="@+id/editor_save_label"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="3dp"
+                    android:text="Текст сохраняется автоматически"
+                    android:textColor="@color/aqua"
+                    android:textSize="11sp" />
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="11dp"
+                    android:baselineAligned="false"
+                    android:orientation="horizontal">
+
+                    <Button
+                        android:id="@+id/paste_button"
+                        style="@style/PocketButton.Primary"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_marginEnd="4dp"
+                        android:layout_weight="1"
+                        android:text="Вставить" />
+
+                    <Button
+                        android:id="@+id/copy_all_button"
+                        style="@style/PocketButton"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_marginStart="4dp"
+                        android:layout_marginEnd="4dp"
+                        android:layout_weight="1"
+                        android:text="Копировать всё" />
+
+                    <Button
+                        android:id="@+id/clear_text_button"
+                        style="@style/PocketButton"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_marginStart="4dp"
+                        android:layout_weight="0.72"
+                        android:background="@drawable/danger_button"
+                        android:text="Очистить"
+                        android:textColor="@color/danger" />
+                </LinearLayout>
+
+                <EditText
+                    android:id="@+id/chapter_editor"
+                    style="@style/PocketInput"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="10dp"
+                    android:gravity="top|start"
+                    android:hint="Вставьте или напишите текст главы…"
+                    android:inputType="textCapSentences|textMultiLine|textNoSuggestions"
+                    android:minHeight="300dp"
+                    android:padding="14dp"
+                    android:scrollbars="vertical" />
+
+                <TextView
+                    android:id="@+id/text_stats_label"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="5dp"
+                    android:gravity="end"
+                    android:text="0 символов · 0 слов"
+                    android:textColor="@color/muted"
+                    android:textSize="11sp" />
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="14dp"
+                    android:background="@drawable/panel_background"
+                    android:orientation="vertical"
+                    android:padding="14dp">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:fontFamily="sans-serif-medium"
+                        android:text="Голос"
+                        android:textColor="@color/text"
+                        android:textSize="17sp" />
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="3dp"
+                        android:text="Системные голоса Android; сетевые отмечены облаком."
+                        android:textColor="@color/muted"
+                        android:textSize="11sp" />
+
+                    <Spinner
+                        android:id="@+id/voice_spinner"
+                        android:layout_width="match_parent"
+                        android:layout_height="50dp"
+                        android:layout_marginTop="9dp"
+                        android:background="@drawable/input_background"
+                        android:paddingStart="10dp"
+                        android:paddingEnd="10dp"
+                        android:popupBackground="@color/panel_raised"
+                        android:spinnerMode="dialog" />
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="12dp"
+                        android:gravity="center_vertical"
+                        android:orientation="horizontal">
+
+                        <TextView
+                            android:layout_width="72dp"
+                            android:layout_height="wrap_content"
+                            android:text="Скорость"
+                            android:textColor="@color/text_soft"
+                            android:textSize="12sp" />
+
+                        <SeekBar
+                            android:id="@+id/speech_rate_seek"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:max="100"
+                            android:progress="50"
+                            android:progressTint="@color/accent"
+                            android:thumbTint="@color/accent" />
+
+                        <TextView
+                            android:id="@+id/speech_rate_value"
+                            android:layout_width="48dp"
+                            android:layout_height="wrap_content"
+                            android:gravity="end"
+                            android:text="1.00×"
+                            android:textColor="@color/accent"
+                            android:textSize="12sp" />
+                    </LinearLayout>
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:gravity="center_vertical"
+                        android:orientation="horizontal">
+
+                        <TextView
+                            android:layout_width="72dp"
+                            android:layout_height="wrap_content"
+                            android:text="Высота"
+                            android:textColor="@color/text_soft"
+                            android:textSize="12sp" />
+
+                        <SeekBar
+                            android:id="@+id/pitch_seek"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:max="100"
+                            android:progress="50"
+                            android:progressTint="@color/aqua"
+                            android:thumbTint="@color/aqua" />
+
+                        <TextView
+                            android:id="@+id/pitch_value"
+                            android:layout_width="48dp"
+                            android:layout_height="wrap_content"
+                            android:gravity="end"
+                            android:text="1.00×"
+                            android:textColor="@color/aqua"
+                            android:textSize="12sp" />
+                    </LinearLayout>
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="10dp"
+                        android:baselineAligned="false"
+                        android:orientation="horizontal">
+
+                        <Button
+                            android:id="@+id/narrate_chapter_button"
+                            style="@style/PocketButton.Primary"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_marginEnd="5dp"
+                            android:layout_weight="1"
+                            android:text="Озвучить главу" />
+
+                        <Button
+                            android:id="@+id/narrate_book_button"
+                            style="@style/PocketButton"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_marginStart="5dp"
+                            android:layout_weight="1"
+                            android:text="Всю книгу" />
+                    </LinearLayout>
+                </LinearLayout>
+
+                <LinearLayout
+                    android:id="@+id/narration_progress_panel"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="12dp"
+                    android:background="@drawable/panel_background"
+                    android:orientation="vertical"
+                    android:padding="14dp"
+                    android:visibility="gone">
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:gravity="center_vertical"
+                        android:orientation="horizontal">
+
+                        <LinearLayout
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:orientation="vertical">
+
+                            <TextView
+                                android:id="@+id/narration_stage_label"
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:fontFamily="sans-serif-medium"
+                                android:text="Подготовка текста"
+                                android:textColor="@color/text"
+                                android:textSize="15sp" />
+
+                            <TextView
+                                android:id="@+id/narration_elapsed_label"
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:layout_marginTop="2dp"
+                                android:text="Прошло 00:00"
+                                android:textColor="@color/muted"
+                                android:textSize="11sp" />
+                        </LinearLayout>
+
+                        <TextView
+                            android:id="@+id/narration_percent_label"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:fontFamily="sans-serif-light"
+                            android:text="0%"
+                            android:textColor="@color/accent"
+                            android:textSize="28sp" />
+                    </LinearLayout>
+
+                    <ProgressBar
+                        android:id="@+id/narration_progress"
+                        style="?android:attr/progressBarStyleHorizontal"
+                        android:layout_width="match_parent"
+                        android:layout_height="8dp"
+                        android:layout_marginTop="11dp"
+                        android:max="100"
+                        android:progress="0"
+                        android:progressDrawable="@drawable/progress_track" />
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="8dp"
+                        android:gravity="center_vertical"
+                        android:orientation="horizontal">
+
+                        <Button
+                            android:id="@+id/console_toggle_button"
+                            style="@style/PocketButton"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_marginEnd="5dp"
+                            android:layout_weight="1"
+                            android:text="Показать техлог" />
+
+                        <Button
+                            android:id="@+id/cancel_narration_button"
+                            style="@style/PocketButton"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_marginStart="5dp"
+                            android:layout_weight="1"
+                            android:background="@drawable/danger_button"
+                            android:text="Отменить"
+                            android:textColor="@color/danger" />
+                    </LinearLayout>
+
+                    <ScrollView
+                        android:id="@+id/console_scroll"
+                        android:layout_width="match_parent"
+                        android:layout_height="170dp"
+                        android:layout_marginTop="8dp"
+                        android:background="@drawable/input_background"
+                        android:fillViewport="true"
+                        android:visibility="gone">
+
+                        <TextView
+                            android:id="@+id/console_text"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:fontFamily="monospace"
+                            android:padding="10dp"
+                            android:text="Технический журнал появится здесь."
+                            android:textColor="@color/text_soft"
+                            android:textIsSelectable="true"
+                            android:textSize="10sp" />
+                    </ScrollView>
+                </LinearLayout>
+            </LinearLayout>
+        </ScrollView>
+
+        <!-- АУДИО -->
+        <ScrollView
+            android:id="@+id/page_audio"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:clipToPadding="false"
+            android:fillViewport="true"
+            android:overScrollMode="never">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:paddingStart="16dp"
+                android:paddingTop="14dp"
+                android:paddingEnd="16dp"
+                android:paddingBottom="26dp">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:fontFamily="sans-serif-light"
+                    android:text="Готовое аудио"
+                    android:textColor="@color/text"
+                    android:textSize="27sp" />
+
+                <TextView
+                    android:id="@+id/audio_context_label"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:text="Выберите книгу"
+                    android:textColor="@color/muted"
+                    android:textSize="12sp" />
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="12dp"
+                    android:background="@drawable/panel_background"
+                    android:orientation="vertical"
+                    android:padding="10dp">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginStart="4dp"
+                        android:layout_marginTop="3dp"
+                        android:fontFamily="sans-serif-medium"
+                        android:text="Файлы книги"
+                        android:textColor="@color/text_soft"
+                        android:textSize="12sp" />
+
+                    <ListView
+                        android:id="@+id/audio_list"
+                        android:layout_width="match_parent"
+                        android:layout_height="176dp"
+                        android:layout_marginTop="5dp"
+                        android:choiceMode="singleChoice"
+                        android:divider="@color/line"
+                        android:dividerHeight="1dp"
+                        android:listSelector="@drawable/tab_background"
+                        android:overScrollMode="never" />
+
+                    <TextView
+                        android:id="@+id/audio_empty_label"
+                        android:layout_width="match_parent"
+                        android:layout_height="176dp"
+                        android:gravity="center"
+                        android:padding="20dp"
+                        android:text="Здесь появятся озвученные главы и книги"
+                        android:textColor="@color/muted"
+                        android:textSize="13sp" />
+                </LinearLayout>
+
+                <LinearLayout
+                    android:id="@+id/player_panel"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="12dp"
+                    android:background="@drawable/section_header_background"
+                    android:orientation="vertical"
+                    android:padding="14dp">
+
+                    <TextView
+                        android:id="@+id/player_title"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:ellipsize="end"
+                        android:fontFamily="sans-serif-medium"
+                        android:maxLines="2"
+                        android:text="Выберите аудиофайл"
+                        android:textColor="@color/text"
+                        android:textSize="17sp" />
+
+                    <TextView
+                        android:id="@+id/player_subtitle"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="3dp"
+                        android:ellipsize="end"
+                        android:maxLines="1"
+                        android:text="WAV · локально"
+                        android:textColor="@color/aqua"
+                        android:textSize="11sp" />
+
+                    <com.templeoflizard.bookwunderwaffe.pocket.ui.WaveformView
+                        android:id="@+id/waveform"
+                        android:layout_width="match_parent"
+                        android:layout_height="88dp"
+                        android:layout_marginTop="10dp"
+                        android:contentDescription="Форма аудиоволны и позиция воспроизведения" />
+
+                    <SeekBar
+                        android:id="@+id/player_seek"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:max="1000"
+                        android:paddingStart="0dp"
+                        android:paddingEnd="0dp"
+                        android:progressTint="@color/accent"
+                        android:thumbTint="@color/accent" />
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="horizontal">
+
+                        <TextView
+                            android:id="@+id/player_current_time"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:text="00:00"
+                            android:textColor="@color/text_soft"
+                            android:textSize="11sp" />
+
+                        <TextView
+                            android:id="@+id/player_total_time"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="00:00"
+                            android:textColor="@color/text_soft"
+                            android:textSize="11sp" />
+                    </LinearLayout>
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="6dp"
+                        android:gravity="center"
+                        android:orientation="horizontal">
+
+                        <Button
+                            android:id="@+id/player_back_button"
+                            style="@style/PocketButton"
+                            android:layout_width="72dp"
+                            android:layout_height="48dp"
+                            android:text="−15 с" />
+
+                        <Button
+                            android:id="@+id/player_play_button"
+                            style="@style/PocketButton.Primary"
+                            android:layout_width="0dp"
+                            android:layout_height="52dp"
+                            android:layout_marginStart="10dp"
+                            android:layout_marginEnd="10dp"
+                            android:layout_weight="1"
+                            android:text="▶  Играть"
+                            android:textSize="14sp" />
+
+                        <Button
+                            android:id="@+id/player_forward_button"
+                            style="@style/PocketButton"
+                            android:layout_width="72dp"
+                            android:layout_height="48dp"
+                            android:text="+15 с" />
+                    </LinearLayout>
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="8dp"
+                        android:gravity="center_vertical"
+                        android:orientation="horizontal">
+
+                        <TextView
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:text="Скорость плеера"
+                            android:textColor="@color/text_soft"
+                            android:textSize="12sp" />
+
+                        <Spinner
+                            android:id="@+id/player_speed_spinner"
+                            android:layout_width="100dp"
+                            android:layout_height="44dp"
+                            android:background="@drawable/input_background"
+                            android:paddingStart="10dp"
+                            android:paddingEnd="8dp"
+                            android:popupBackground="@color/panel_raised"
+                            android:spinnerMode="dialog" />
+                    </LinearLayout>
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="10dp"
+                        android:baselineAligned="false"
+                        android:orientation="horizontal">
+
+                        <Button
+                            android:id="@+id/save_audio_button"
+                            style="@style/PocketButton.Primary"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_marginEnd="5dp"
+                            android:layout_weight="1"
+                            android:text="Сохранить WAV" />
+
+                        <Button
+                            android:id="@+id/share_audio_button"
+                            style="@style/PocketButton"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_marginStart="5dp"
+                            android:layout_weight="1"
+                            android:text="Поделиться" />
+                    </LinearLayout>
+                </LinearLayout>
+            </LinearLayout>
+        </ScrollView>
+    </ViewFlipper>
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="70dp"
+        android:background="@drawable/nav_background"
+        android:gravity="center"
+        android:orientation="horizontal"
+        android:paddingStart="8dp"
+        android:paddingTop="6dp"
+        android:paddingEnd="8dp"
+        android:paddingBottom="6dp">
+
+        <Button
+            android:id="@+id/nav_books"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_marginEnd="3dp"
+            android:layout_weight="1"
+            android:background="@drawable/tab_background"
+            android:fontFamily="sans-serif-medium"
+            android:minWidth="0dp"
+            android:padding="3dp"
+            android:text="▤\nКниги"
+            android:textAllCaps="false"
+            android:textColor="@color/text"
+            android:textSize="11sp" />
+
+        <Button
+            android:id="@+id/nav_text"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_marginStart="3dp"
+            android:layout_marginEnd="3dp"
+            android:layout_weight="1"
+            android:background="@drawable/tab_background"
+            android:fontFamily="sans-serif-medium"
+            android:minWidth="0dp"
+            android:padding="3dp"
+            android:text="✎\nТекст"
+            android:textAllCaps="false"
+            android:textColor="@color/text_soft"
+            android:textSize="11sp" />
+
+        <Button
+            android:id="@+id/nav_audio"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_marginStart="3dp"
+            android:layout_weight="1"
+            android:background="@drawable/tab_background"
+            android:fontFamily="sans-serif-medium"
+            android:minWidth="0dp"
+            android:padding="3dp"
+            android:text="♪\nАудио"
+            android:textAllCaps="false"
+            android:textColor="@color/text_soft"
+            android:textSize="11sp" />
+    </LinearLayout>
+</LinearLayout>

@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="bg">#09090B</color>
+    <color name="panel">#101013</color>
+    <color name="panel_raised">#17171C</color>
+    <color name="line">#29292F</color>
+    <color name="text">#F1F0ED</color>
+    <color name="text_soft">#BBB9B3</color>
+    <color name="muted">#77767C</color>
+    <color name="accent">#C479FF</color>
+    <color name="accent_deep">#8058E8</color>
+    <color name="aqua">#55BDB2</color>
+    <color name="amber">#EFA929</color>
+    <color name="danger">#DC6268</color>
+    <color name="success">#75B996</color>
+</resources>

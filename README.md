@@ -190,6 +190,18 @@ ffprobe -version
 
 Если GPU-кодировщик недоступен, это не должно останавливать экспорт: движок повторит сегмент через CPU. Логи и готовые файлы доступны в экспортном окне и `_suviren_q_build/`.
 
+## Android · Pocket Lite
+
+В этом же репозитории находится нативная урезанная версия для телефона —
+**Book Wunderwaffe Pocket**. Она хранит книги и главы локально, озвучивает длинный
+текст системным Android TTS в фоне, собирает один WAV, показывает процент и скрытый
+технический журнал, а также сохраняет или отправляет готовое аудио через системное
+окно Android.
+
+Исходники, APK-сборка и отдельная документация: [android/README.md](android/README.md).
+Версионированный пакет `.bwlbook` закладывает общий контракт для будущего обмена
+книгами между Pocket и Studio без копирования SQLite-файлов.
+
 ## English overview
 
 BOOK WUNDERWAFFE Studio is a local-first audiobook production suite that turns mastered audio and REAPER chapter markers into polished, upload-ready videos—with synchronized waveform visuals, adaptive typography, branded QR overlays, a native desktop shell, and reliable accelerated FFmpeg export.

@@ -37,6 +37,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
 from bookender.logging import log_event
+from bookender.visual_inserts import auto_place_visuals, chapter_bounds, compile_scene_plan, normalize_visual_inserts
 from bookender.paths import DATABASE_PATH, USER_DATA
 from bookender.repository import (
     ProjectNotFoundError,
@@ -169,6 +170,12 @@ class ChapterUpdateRequest(BaseModel):
 class ChapterOrderRequest(BaseModel):
     chapter_ids: list[int]
 
+class TextVersionRequest(BaseModel):
+    title: str = ""
+
+class MetaNotesRequest(BaseModel):
+    notes: list[dict[str, Any]] = []
+
 
 class TtsSettingsRequest(BaseModel):
     voice: str = ""
@@ -189,6 +196,14 @@ class AudioAssetUpdateRequest(BaseModel):
 
 
 class ChapterAudioExportRequest(BaseModel):
+    editor_project: dict[str, Any] | None = None
+
+
+class BookAudioExportRequest(BaseModel):
+    chapter_ids: list[int]
+    mode: str = "complete"
+    bitrate: int = 192
+    include_music: bool = True
     editor_project: dict[str, Any] | None = None
 
 
@@ -392,6 +407,7 @@ def normalize_editor_chapters(
             "end_seconds": round(end, 3),
             "duration_seconds": round(end - start, 3),
             "source": str(raw.get("source") or "editor"),
+            "visualInserts": normalize_visual_inserts(raw.get("visualInserts"), raw.get("id", index)),
         })
         normalized.append(raw)
     return normalized
@@ -1767,6 +1783,123 @@ def export_bookender_chapter_audio(
         raise project_http_error(exc) from exc
 
 
+def prepare_book_audio_export(project_uuid: str, data: BookAudioExportRequest) -> dict[str, Any]:
+    from suviren_q import load_editor_music_clips
+
+    project = PROJECT_REPOSITORY.get_project(project_uuid, include_details=True)
+    all_chapters = project.get("chapters") or []
+    selected = set(data.chapter_ids)
+    if not selected or selected - {chapter["id"] for chapter in all_chapters}:
+        raise ValueError("Выберите существующие главы этой книги.")
+    if data.mode not in {"complete", "chapters"} or data.bitrate not in {128, 192, 256, 320}:
+        raise ValueError("Некорректный формат или битрейт MP3.")
+    editor = data.editor_project if data.editor_project is not None else latest_editor_project(project_uuid)
+    timings = {str(item.get("chapterId")): item for item in editor.get("chapters", []) if isinstance(item, dict)}
+    chapters = []
+    cursor = 0.0
+    for position, chapter in enumerate(all_chapters, 1):
+        asset = select_chapter_audio_asset(project, chapter["id"])
+        audio = project_export_media_path(project, asset.get("file_path")) if asset else None
+        source_duration = float(asset.get("duration") or TTS_SERVICE._audio_duration(audio) or 0) if audio else 0
+        if chapter["id"] in selected and (not audio or not math.isfinite(source_duration) or source_duration <= 0):
+            raise ValueError(f"Нет готовой озвучки главы «{chapter['title']}».")
+        if source_duration <= 0 or not math.isfinite(source_duration):
+            continue
+        timing = timings.get(str(chapter["id"]), {})
+        start = max(0.0, float(timing.get("start_seconds", cursor)))
+        end = float(timing.get("end_seconds", start + source_duration))
+        duration = end - start
+        if not math.isfinite(start) or not math.isfinite(duration):
+            raise ValueError("Некорректные временные границы главы.")
+        has_timing = timing.get("audioAssetId") or timing.get("sourceEndSeconds") is not None
+        if not has_timing or duration <= 0 or not 0.25 <= source_duration / duration <= 8:
+            duration = source_duration
+        cursor = start + duration
+        if chapter["id"] in selected:
+            chapters.append({
+                "id": chapter["id"], "position": position,
+                "title": safe_book_export_name(chapter.get("title"), f"Глава {position}"),
+                "audio": audio, "source_duration": source_duration, "start": start, "duration": duration,
+            })
+    music_config = dict(editor.get("music") or {})
+    music_config["enabled"] = data.include_music and music_config.get("enabled", True)
+    music_clips = load_editor_music_clips(editor, None, path_resolver=resolve_editor_server_path) if music_config["enabled"] else []
+    music = None
+    if music_config["enabled"]:
+        raw_clips = [clip for clip in editor.get("musicClips", []) if clip.get("enabled", True)]
+        if music_clips is not None and len(raw_clips) != len(music_clips):
+            raise ValueError("Часть музыкальных файлов недоступна. Восстановите их или отключите музыку в экспорте.")
+        if music_clips is None and editor.get("musicAssetId"):
+            material = next((item for item in editor.get("materials", []) if item.get("id") == editor["musicAssetId"]), {})
+            music = resolve_editor_server_path(material.get("serverPath"))
+            if music is None:
+                raise ValueError("Музыкальный файл недоступен.")
+    project_root = (USER_DATA / str(project["project_folder"])).resolve()
+    export_dir = (project_root / "exports").resolve()
+    if not is_within(project_root, USER_DATA.resolve()) or not is_within(export_dir, project_root):
+        raise ValueError("Некорректный каталог экспорта.")
+    return {
+        "chapters": chapters, "export_dir": export_dir,
+        "title": safe_book_export_name(project.get("book", {}).get("title") or project.get("title"), "Книга"),
+        "mode": data.mode, "bitrate": data.bitrate,
+        "music_config": music_config, "music_clips": music_clips, "music": music,
+    }
+
+
+@app.post("/api/projects/{project_uuid}/audio-export")
+def start_book_audio_export(project_uuid: str, data: BookAudioExportRequest):
+    try:
+        prepared = prepare_book_audio_export(project_uuid, data)
+    except Exception as exc:
+        raise project_http_error(exc) from exc
+    with JOBS_LOCK:
+        if any(job["kind"] == "audio-export" and job["status"] == "running" for job in JOBS.values()):
+            raise HTTPException(409, "Экспорт аудиокниги уже выполняется.")
+        job_id = uuid.uuid4().hex[:12]
+        job = {
+            "id": job_id, "kind": "audio-export", "project_uuid": project_uuid,
+            "status": "running", "progress": 0.0, "stage": "Подготовка аудио",
+            "created_at": time.time(), "updated_at": time.time(), "log": [],
+            "output_exists": False, "download_url": None,
+        }
+        JOBS[job_id] = job
+
+    def run_export():
+        from bookender.audio_export import render_book_audio
+
+        def progress(value, stage):
+            job.update(progress=value, stage=stage, updated_at=time.time())
+
+        try:
+            output = render_book_audio(**prepared, progress=progress)
+            job.update(
+                status="done", progress=1.0, stage="Аудиокнига готова",
+                output=str(output), output_exists=True, output_size=output.stat().st_size,
+                download_url=f"/api/projects/{project_uuid}/audio-export/{job_id}/download",
+            )
+        except (Exception, SystemExit) as exc:
+            job.update(status="failed", stage=str(exc) or "FFmpeg не смог собрать аудиокнигу")
+            job["log"].append(job["stage"])
+        finally:
+            job["updated_at"] = time.time()
+
+    threading.Thread(target=run_export, daemon=True, name=f"audio-export-{job_id}").start()
+    return dict(job)
+
+
+@app.get("/api/projects/{project_uuid}/audio-export/{job_id}/download")
+def download_book_audio_export(project_uuid: str, job_id: str):
+    job = JOBS.get(job_id)
+    if not job or job.get("project_uuid") != project_uuid or job.get("kind") != "audio-export":
+        raise HTTPException(404, "Экспорт не найден.")
+    if job["status"] != "done":
+        raise HTTPException(409, "Экспорт ещё не готов.")
+    output = Path(job["output"])
+    if not output.is_file():
+        raise HTTPException(404, "Файл экспорта не найден.")
+    return FileResponse(str(output), media_type="audio/mpeg" if output.suffix == ".mp3" else "application/zip", filename=output.name)
+
+
 @app.post("/api/projects/{project_uuid}/book")
 def create_project_book_part(
     project_uuid: str,
@@ -1883,6 +2016,49 @@ def narrate_project_book(project_uuid: str) -> dict[str, Any]:
     try:
         jobs = TTS_SERVICE.queue_book(project_uuid)
         return {"jobs": jobs, "queued": len(jobs)}
+    except Exception as exc:
+        raise project_http_error(exc) from exc
+
+@app.post("/api/projects/{project_uuid}/chapters/{chapter_id}/text-versions")
+def create_chapter_text_version(project_uuid: str, chapter_id: int, data: TextVersionRequest) -> dict[str, Any]:
+    try:
+        return PROJECT_REPOSITORY.create_text_version(project_uuid, chapter_id, data.title)
+    except Exception as exc:
+        raise project_http_error(exc) from exc
+
+@app.get("/api/projects/{project_uuid}/chapters/{chapter_id}/text-versions/{version_id}")
+def get_chapter_text_version(project_uuid: str, chapter_id: int, version_id: int) -> dict[str, Any]:
+    try:
+        return PROJECT_REPOSITORY.get_text_version(project_uuid, chapter_id, version_id)
+    except Exception as exc:
+        raise project_http_error(exc) from exc
+
+@app.patch("/api/projects/{project_uuid}/chapters/{chapter_id}/text-versions/{version_id}")
+def rename_chapter_text_version(project_uuid: str, chapter_id: int, version_id: int, data: TextVersionRequest) -> dict[str, Any]:
+    try:
+        return PROJECT_REPOSITORY.rename_text_version(project_uuid, chapter_id, version_id, data.title)
+    except Exception as exc:
+        raise project_http_error(exc) from exc
+
+@app.delete("/api/projects/{project_uuid}/chapters/{chapter_id}/text-versions/{version_id}")
+def delete_chapter_text_version(project_uuid: str, chapter_id: int, version_id: int) -> dict[str, Any]:
+    try:
+        PROJECT_REPOSITORY.delete_text_version(project_uuid, chapter_id, version_id)
+        return {"ok": True}
+    except Exception as exc:
+        raise project_http_error(exc) from exc
+
+@app.post("/api/projects/{project_uuid}/chapters/{chapter_id}/text-versions/{version_id}/restore")
+def restore_chapter_text_version(project_uuid: str, chapter_id: int, version_id: int) -> dict[str, Any]:
+    try:
+        return PROJECT_REPOSITORY.restore_text_version(project_uuid, chapter_id, version_id)
+    except Exception as exc:
+        raise project_http_error(exc) from exc
+
+@app.put("/api/projects/{project_uuid}/chapters/{chapter_id}/meta-notes")
+def save_chapter_meta_notes(project_uuid: str, chapter_id: int, data: MetaNotesRequest) -> dict[str, Any]:
+    try:
+        return {"notes": PROJECT_REPOSITORY.replace_meta_notes(project_uuid, chapter_id, data.notes)}
     except Exception as exc:
         raise project_http_error(exc) from exc
 
@@ -2153,6 +2329,26 @@ def save_editor_project(
     else:
         result["storage"] = "compatibility_json"
     return result
+
+
+@app.post("/api/scene-plan")
+def editor_scene_plan(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    """Compile unsaved editor state; seeking/playback needs no per-frame API calls."""
+    return compile_scene_plan(payload)
+
+
+@app.post("/api/visual-inserts/auto-place")
+def place_editor_visuals(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    project = payload.get("project") or {}
+    target = payload.get("chapterId")
+    result = []
+    for chapter, start, end in chapter_bounds(project):
+        if target is not None and str(chapter.get("id")) != str(target):
+            continue
+        result.append({"id": chapter.get("id"), "visualInserts": auto_place_visuals(
+            chapter, end - start, asset_ids=payload.get("assetIds"), append=payload.get("append") is True,
+        )})
+    return {"chapters": result}
 
 
 @app.post("/api/book-project/refresh-chapters")
