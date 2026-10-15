@@ -5,6 +5,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from PIL import Image
+
 import suviren_q_server as server
 from bookender.database import BookenderDatabase
 from bookender.repository import ProjectRepository
@@ -152,6 +154,28 @@ class ProjectApiTests(unittest.TestCase):
                 [{"start_seconds": 0, "end_seconds": 3}]
             )
         )
+
+    def test_project_thumbnail_is_small_cached_webp(self) -> None:
+        source = self.user_data / "projects" / "demo" / "images" / "frame.png"
+        source.parent.mkdir(parents=True)
+        Image.new("RGB", (1600, 900), (180, 80, 30)).save(source)
+        cache = self.user_data / "cache" / "thumbnails"
+        with (
+            patch.object(server, "USER_DATA", self.user_data),
+            patch.object(server, "THUMBNAIL_CACHE_DIR", cache),
+        ):
+            first = server.project_thumbnail(
+                "projects/demo/images/frame.png", width=320, height=180
+            )
+            second = server.project_thumbnail(
+                "projects/demo/images/frame.png", width=320, height=180
+            )
+        thumbnail = Path(first.path)
+        self.assertEqual(thumbnail, Path(second.path))
+        self.assertLess(thumbnail.stat().st_size, source.stat().st_size)
+        with Image.open(thumbnail) as image:
+            self.assertEqual(image.format, "WEBP")
+            self.assertEqual(image.size, (320, 180))
 
 
 if __name__ == "__main__":

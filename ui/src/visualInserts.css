@@ -43,7 +43,7 @@
 .scene-frame.visual-active > .visualizer-layer { z-index: 28; }
 .timeline-labels, .timeline-content { grid-template-rows: 24px repeat(6, minmax(46px, 1fr)); min-height: 300px; height: max(100%, 300px); }
 .track-icon.insert { border-color: #b599e8; }
-.visual-insert-clip { position: absolute; top: 4px; bottom: 4px; min-width: 3px; display: flex; align-items: center; gap: 6px; overflow: hidden; padding: 0 7px; border: 1px solid #63527e; border-radius: 4px; background: #282038; color: #cbb9e7; text-align: left; cursor: grab; }
+.visual-insert-clip { contain: layout paint style; position: absolute; top: 4px; bottom: 4px; min-width: 3px; display: flex; align-items: center; gap: 6px; overflow: hidden; padding: 0 7px; border: 1px solid #63527e; border-radius: 4px; background: #282038; color: #cbb9e7; text-align: left; cursor: grab; }
 .visual-insert-clip.selected, .visual-insert-clip:hover { border-color: #d2b4ff; background: #443257; }
 .visual-insert-clip.active { box-shadow: inset 0 0 0 1px #bfa5e3; }
 .visual-insert-clip img { height: 100%; width: 40px; flex-shrink: 0; object-fit: cover; pointer-events: none; }

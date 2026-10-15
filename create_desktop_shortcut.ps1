@@ -21,7 +21,7 @@ $shortcut = $shell.CreateShortcut($shortcutPath)
 $shortcut.TargetPath = $launcherPath
 $shortcut.WorkingDirectory = $projectRoot
 $shortcut.IconLocation = "$iconPath,0"
-$shortcut.Description = 'BOOK WUNDERWAFFE Studio - Local-first Audiobook Production Suite'
+$shortcut.Description = 'BOOK WUNDERWAFFE Studio 4.0 - Local-first Audiobook Production Suite'
 $shortcut.WindowStyle = 7
 $shortcut.Save()
 

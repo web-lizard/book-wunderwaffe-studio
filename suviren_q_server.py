@@ -15,6 +15,7 @@ Provides endpoints for:
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import re
 import shutil
@@ -60,7 +61,8 @@ EDITOR_PROJECT_PATH = BUILD_DIR / "editor-project.json"
 CHAPTERS_PATH = BUILD_DIR / "chapters.detected.json"
 
 APP_NAME = "Book Wunderwaffe Studio"
-APP_VERSION = "3.0.0"
+APP_VERSION = "4.0.0"
+THUMBNAIL_CACHE_DIR = USER_DATA / "cache" / "thumbnails"
 
 AUDIO_EXTENSIONS = {".mp3", ".wav", ".m4a", ".flac", ".aac", ".ogg", ".opus"}
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"}
@@ -3023,7 +3025,71 @@ def project_media(filename: str):
     projects_root = (USER_DATA / "projects").resolve()
     if not is_within(path, projects_root) or not path.is_file():
         raise HTTPException(status_code=404, detail="Project media not found")
-    return FileResponse(str(path))
+    return FileResponse(str(path), headers={"Cache-Control": "private, max-age=3600"})
+
+
+def cached_thumbnail_path(source: Path, width: int, height: int) -> Path:
+    """Build one stable cache path per source and requested preview size."""
+    fingerprint = "|".join((str(source.resolve()), str(width), str(height)))
+    digest = hashlib.sha256(fingerprint.encode("utf-8")).hexdigest()
+    return THUMBNAIL_CACHE_DIR / digest[:2] / f"{digest}.webp"
+
+
+def ensure_thumbnail(source: Path, destination: Path, width: int, height: int) -> None:
+    """Create a compact letterboxed WebP thumbnail through an atomic publish."""
+    if destination.is_file():
+        try:
+            if destination.stat().st_mtime_ns >= source.stat().st_mtime_ns:
+                return
+        except OSError:
+            pass
+    from PIL import Image, ImageOps
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temp = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        with Image.open(source) as opened:
+            image = ImageOps.exif_transpose(opened).convert("RGB")
+            image.thumbnail((width, height), Image.Resampling.LANCZOS)
+            canvas = Image.new("RGB", (width, height), (12, 12, 18))
+            left = (width - image.width) // 2
+            top = (height - image.height) // 2
+            canvas.paste(image, (left, top))
+            quality = 84 if width >= 1280 else 68
+            canvas.save(temp, format="WEBP", quality=quality, method=4)
+        os.replace(temp, destination)
+    finally:
+        try:
+            temp.unlink()
+        except FileNotFoundError:
+            pass
+
+
+@app.get("/api/project-thumbnail/{filename:path}")
+def project_thumbnail(
+    filename: str,
+    width: int = Query(320, ge=64, le=1920),
+    height: int = Query(180, ge=36, le=1080),
+):
+    """Serve a cached WebP preview without transferring the original artwork."""
+    source = (USER_DATA / filename).resolve()
+    projects_root = (USER_DATA / "projects").resolve()
+    if (
+        not is_within(source, projects_root)
+        or not source.is_file()
+        or source.suffix.lower() not in IMAGE_EXTENSIONS
+    ):
+        raise HTTPException(status_code=404, detail="Project image not found")
+    destination = cached_thumbnail_path(source, width, height)
+    try:
+        ensure_thumbnail(source, destination, width, height)
+    except (OSError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=f"Cannot create thumbnail: {exc}") from exc
+    return FileResponse(
+        str(destination),
+        media_type="image/webp",
+        headers={"Cache-Control": "private, max-age=0, must-revalidate"},
+    )
 
 
 @app.get("/api/exports/{filename}")

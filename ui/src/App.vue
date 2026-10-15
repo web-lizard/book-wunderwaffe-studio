@@ -6,7 +6,7 @@
         <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
         <span class="brand-copy">
           <strong>BOOK WUNDERWAFFE STUDIO</strong>
-          <small>BOOK · VOICE · VIDEO · v{{ backend.version || '3.0.0' }}</small>
+          <small>BOOK · VOICE · VIDEO · v{{ backend.version || '4.0.0' }}</small>
         </span>
       </div>
 
@@ -239,9 +239,10 @@
             <button type="button" @click="setWorkspace('book')">Перейти к озвучке</button>
           </div>
 
-          <component v-for="clip in previewVisualClips" :is="VISUAL_CONTENT_COMPONENTS[clip.mode]" :key="`${clip.chapterId}-${clip.id}`"
-                         :clip="clip" :src="assetUrl(assetById(clip.assetId))"
-                         :opacity="visualScene.visual?.id === clip.id ? visualScene.opacity : 0"
+          <component v-if="visualScene.visual" :is="VISUAL_CONTENT_COMPONENTS[visualScene.visual.mode]"
+                         :key="`${visualScene.visual.chapterId}-${visualScene.visual.id}`"
+                         :clip="visualScene.visual" :src="assetPreviewUrl(assetById(visualScene.visual.assetId))"
+                         :opacity="visualScene.opacity"
                          :comic="isComicEdition"
                          :scene-width="sceneEl?.clientWidth || 960" />
 
@@ -518,7 +519,7 @@
               <button type="button" class="jump-button" :disabled="visualPlacementBusy" @click="autoPlaceVisuals(selectedChapter)">Авторасставить визуалы</button>
               <button v-for="insert in selectedChapter.visualInserts || []" :key="insert.id" type="button"
                       class="visual-insert-row" @click="select('visual', insert.id)">
-                <img :src="assetUrl(assetById(insert.assetId))" alt="" />
+                <img :src="assetThumbnailUrl(assetById(insert.assetId))" loading="lazy" decoding="async" alt="" />
                 <span>{{ assetById(insert.assetId)?.name || 'Изображение не найдено' }}<small>{{ formatTime(insert.startTime, true) }} · {{ formatTime(insert.duration, true) }}</small></span>
               </button>
             </div>
@@ -1043,6 +1044,7 @@
       </nav>
 
       <div ref="timelineScroll" class="timeline-scroll"
+           @scroll.passive="updateTimelineViewport"
            @wheel="onTimelineWheel" @pointerdown="startTimelinePan">
         <div class="timeline-labels">
           <div class="ruler-spacer"></div>
@@ -1090,14 +1092,16 @@
           </div>
 
           <div class="timeline-lane visual-inserts-lane" @pointerdown.self="startTimelineScrub">
-            <button v-for="clip in timelineVisualClips" :key="clip.id" type="button" class="visual-insert-clip"
+            <button v-for="clip in visibleTimelineVisualClips" :key="clip.id" type="button" class="visual-insert-clip"
                     :class="{ selected: selection.type === 'visual' && selection.id === clip.id, active: visualScene.visual?.id === clip.id }"
                     :style="clipStyle(clip.start, clip.end, 0.15)"
                     :title="`${assetById(clip.assetId)?.name || 'Иллюстрация'} · ${clip.chapterTitle}`"
                     @pointerdown.stop="startVisualClipPointer($event, clip, 'move')"
                     @click.stop="select('visual', clip.id)">
               <span class="scene-trim-handle start" title="Изменить начало" @pointerdown.stop="startVisualClipPointer($event, clip, 'trim-start')"></span>
-              <img :src="assetUrl(assetById(clip.assetId))" alt="" /><b>{{ assetById(clip.assetId)?.name || 'Иллюстрация' }}</b>
+              <img v-if="showTimelineClipThumbnail(clip)" :src="assetThumbnailUrl(assetById(clip.assetId))"
+                   loading="lazy" decoding="async" fetchpriority="low" alt="" />
+              <b>{{ assetById(clip.assetId)?.name || 'Иллюстрация' }}</b>
               <span class="scene-trim-handle end" title="Изменить длительность" @pointerdown.stop="startVisualClipPointer($event, clip, 'trim-end')"></span>
             </button>
           </div>
@@ -1405,7 +1409,7 @@
         <div class="visual-picker-grid">
           <label v-for="asset in imageAssets" :key="asset.id" :class="{ selected: visualPickerAssets.includes(asset.id) }">
             <input v-model="visualPickerAssets" type="checkbox" :value="asset.id" :aria-label="asset.name" />
-            <img :src="assetUrl(asset)" alt="" /><span>{{ asset.name }}</span>
+            <img :src="assetThumbnailUrl(asset)" loading="lazy" decoding="async" alt="" /><span>{{ asset.name }}</span>
           </label>
         </div>
         <p v-if="!imageAssets.length">Добавьте картинку — она появится и в общей библиотеке материалов.</p>
@@ -1670,6 +1674,7 @@ const sceneEl = ref(null)
 const visualizerCanvas = ref(null)
 const timelineScroll = ref(null)
 const timelineContent = ref(null)
+const timelineViewport = reactive({ left: 0, width: 0, contentWidth: 0 })
 const textNavigatorScroll = ref(null)
 const titleLayerEl = ref(null)
 const titleStackEl = ref(null)
@@ -1726,6 +1731,7 @@ let playbackFrame = null
 let visualFrame = null
 let titleFitFrame = null
 let titleResizeObserver = null
+let timelineResizeObserver = null
 let titleMeasureCanvas = null
 let visualAudioContext = null
 let visualAnalyser = null
@@ -1756,7 +1762,8 @@ const visualizerLevels = new Float32Array(72)
 const visualizerPeaks = new Float32Array(72)
 const objectUrls = new Set()
 
-const assetById = (id) => project.materials.find((item) => item.id === id) || null
+const assetIndex = computed(() => new Map(project.materials.map(item => [String(item.id), item])))
+const assetById = (id) => assetIndex.value.get(String(id)) || null
 const audioAsset = computed(() => assetById(project.audioAssetId))
 const musicAsset = computed(() => assetById(selectedMusicClip.value?.assetId || project.musicAssetId))
 const videoAsset = computed(() => assetById(project.videoAssetId))
@@ -2196,13 +2203,25 @@ const selectedVisualIssue = computed(() => {
     : reason ? 'Вставка не видна: проверьте границы главы и пересечения с другими вставками.' : ''
 })
 const visualScene = computed(() => sceneAt(visualPlan.value, currentTime.value))
-const previewVisualClips = computed(() => visualPlan.value.clips.filter(clip => clip.chapterId === currentChapter.value?.id))
 const timelineVisualClips = computed(() => timelineChapters.value.flatMap(chapter => (
   (chapter.visualInserts || []).map(insert => ({ ...insert, chapterId: chapter.id, chapterTitle: chapter.title,
     start: chapter.start_seconds + insert.startTime,
     end: Math.min(chapter.end_seconds, chapter.start_seconds + insert.startTime + insert.duration),
   })).filter(clip => clip.end > clip.start)
 )))
+const visibleTimelineRange = computed(() => {
+  const total = Math.max(0.1, duration.value)
+  const contentWidth = Math.max(1, timelineViewport.contentWidth || timelineViewport.width)
+  const viewportWidth = Math.max(1, timelineViewport.width)
+  const overscan = viewportWidth * 0.75
+  const left = Math.max(0, timelineViewport.left - overscan)
+  const right = Math.min(contentWidth, timelineViewport.left + viewportWidth + overscan)
+  return { start: left / contentWidth * total, end: right / contentWidth * total }
+})
+const visibleTimelineVisualClips = computed(() => {
+  const range = visibleTimelineRange.value
+  return timelineVisualClips.value.filter(clip => clip.end >= range.start && clip.start <= range.end)
+})
 const visualPlanInput = computed(() => ({
   duration_seconds: duration.value,
   chapters: timelineChapters.value.map(chapter => ({ id: chapter.id, title: chapter.title,
@@ -2211,6 +2230,17 @@ const visualPlanInput = computed(() => ({
   })),
   materials: project.materials.map(asset => ({ id: asset.id, type: asset.type })),
 }))
+const visualPlanSignature = computed(() => {
+  const chapters = visualPlanInput.value.chapters.map(chapter => {
+    const inserts = chapter.visualInserts.map(clip => [
+      clip.id, clip.assetId, clip.enabled !== false, clip.startTime, clip.duration,
+      clip.transition, clip.transitionDuration,
+    ].join(':')).join(',')
+    return [chapter.id, chapter.start_seconds, chapter.end_seconds, chapter.imageAssetId, inserts].join(';')
+  }).join('|')
+  const materials = visualPlanInput.value.materials.map(asset => `${asset.id}:${asset.type}`).join(',')
+  return `${visualPlanInput.value.duration_seconds}|${chapters}|${materials}`
+})
 const inspectorTitle = computed(() => ({
   project: 'Проект', music: 'Музыка', asset: 'Материал', chapter: 'Глава', scene: 'Сцена', visual: 'Иллюстрация', layer: layerLabel(selection.id),
 })[selection.type] || 'Свойства')
@@ -2351,6 +2381,20 @@ function mediaUrl(path) {
 function assetUrl(asset) {
   if (!asset) return ''
   return asset.src || mediaUrl(asset.serverPath)
+}
+
+function assetThumbnailUrl(asset, width = 320, height = 180) {
+  if (!asset) return ''
+  if (asset.src && !asset.serverPath) return asset.src
+  const normalized = String(asset.serverPath || '').replaceAll('\\', '/').replace(/^\/+/, '')
+  if (!normalized.startsWith('projects/')) return assetUrl(asset)
+  const encoded = normalized.split('/').map(encodeURIComponent).join('/')
+  const revision = encodeURIComponent(String(asset.size || 0))
+  return `${API}/project-thumbnail/${encoded}?width=${width}&height=${height}&v=${revision}`
+}
+
+function assetPreviewUrl(asset) {
+  return assetThumbnailUrl(asset, 1600, 900)
 }
 
 function readingCaptionChunks(text, wordsPerCard = 14) {
@@ -3511,7 +3555,6 @@ async function switchProject(projectUuid, { initial = false } = {}) {
     if (edition) {
       replaceProject(edition.settings)
       syncBookChaptersToVideo(record)
-      await publishVideoCompatibility(projectUuid, edition.id, serializeProject())
     } else {
       const emptyVideo = freshProject()
       emptyVideo.title = record.title
@@ -5272,7 +5315,10 @@ async function focusChapterTimeline(chapter) {
   await nextTick()
   const scroller = timelineScroll.value
   const content = timelineContent.value
-  if (scroller && content) scroller.scrollLeft = chapter.start_seconds / Math.max(duration.value, 0.1) * content.offsetWidth
+  if (scroller && content) {
+    scroller.scrollLeft = chapter.start_seconds / Math.max(duration.value, 0.1) * content.offsetWidth
+    updateTimelineViewport()
+  }
 }
 
 function toggleChapterTimelineMode() {
@@ -5968,6 +6014,23 @@ function clipStyle(start, end, minWidth = 0.4) {
   const left = Math.max(0, Math.min(100, Number(start) / total * 100))
   const width = Math.max(minWidth, Math.min(100 - left, (Math.max(Number(end), Number(start)) - Number(start)) / total * 100))
   return { left: `${left}%`, width: `${width}%` }
+}
+
+function updateTimelineViewport() {
+  const scroller = timelineScroll.value
+  const content = timelineContent.value
+  if (!scroller || !content) return
+  timelineViewport.left = scroller.scrollLeft
+  timelineViewport.width = scroller.clientWidth
+  timelineViewport.contentWidth = content.offsetWidth
+}
+
+function showTimelineClipThumbnail(clip) {
+  if (selection.type === 'visual' && selection.id === clip.id) return true
+  if (visualScene.value.visual?.id === clip.id) return true
+  const total = Math.max(0.1, duration.value)
+  const contentWidth = Math.max(1, timelineViewport.contentWidth)
+  return Math.max(0, clip.end - clip.start) / total * contentWidth >= 44
 }
 
 function timelineTimeFromPointer(event) {
@@ -6915,10 +6978,12 @@ function scheduleVisualPlan() {
         setNotice(`Предпросмотр иллюстраций недоступен: ${error.message}`, 'error')
       }
     }
-  }, 60)
+  }, 140)
 }
 
-watch(() => JSON.stringify(visualPlanInput.value), scheduleVisualPlan, { immediate: true })
+watch(visualPlanSignature, scheduleVisualPlan, { immediate: true })
+
+watch([timelineZoom, duration, activeWorkspace], () => nextTick(updateTimelineViewport), { flush: 'post' })
 
 watch(() => audioSource.value, () => {
   pauseAll()
@@ -6999,11 +7064,15 @@ onMounted(() => {
   if (typeof ResizeObserver !== 'undefined') {
     titleResizeObserver = new ResizeObserver(scheduleTitleFit)
     if (titleLayerEl.value) titleResizeObserver.observe(titleLayerEl.value)
+    timelineResizeObserver = new ResizeObserver(updateTimelineViewport)
+    if (timelineScroll.value) timelineResizeObserver.observe(timelineScroll.value)
+    if (timelineContent.value) timelineResizeObserver.observe(timelineContent.value)
   }
   document.fonts?.ready?.then(scheduleTitleFit).catch(() => {})
   scheduleTitleFit()
   drawVisualizer()
   loadInitialProject()
+  nextTick(updateTimelineViewport)
 })
 
 onBeforeUnmount(() => {
@@ -7025,6 +7094,7 @@ onBeforeUnmount(() => {
   clearTimeout(audioExportPoll)
   clearInterval(ttsPollTimer)
   titleResizeObserver?.disconnect()
+  timelineResizeObserver?.disconnect()
   if (titleFitFrame !== null) cancelAnimationFrame(titleFitFrame)
   disconnectLiveVisualizer()
   visualAudioContext?.close().catch(() => {})

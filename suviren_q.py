@@ -36,7 +36,7 @@ from bookender.visual_inserts import compile_scene_plan
 from bookender.visual_render import prepare_visual_content, visual_filter_chain
 
 APP_NAME = "book-wunderwaffe-studio"
-APP_VERSION = "3.0.0"
+APP_VERSION = "4.0.0"
 APP_TITLE = f"Book Wunderwaffe Studio {APP_VERSION}"
 BUILD_DIR_NAME = "_suviren_q_build"
 DEFAULT_WIDTH = 1920

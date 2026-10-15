@@ -635,6 +635,8 @@ input:disabled {
 }
 
 .material-row {
+  content-visibility: auto;
+  contain-intrinsic-size: 50px;
   position: relative;
   display: grid;
   grid-template-columns: 34px minmax(0, 1fr) 8px;

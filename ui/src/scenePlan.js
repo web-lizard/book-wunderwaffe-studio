@@ -11,7 +11,17 @@ export function opacityAt(clip, time) {
 }
 
 export function sceneAt(plan, time) {
-  const visual = plan?.clips?.find(clip => time >= clip.start && time < clip.end) || null
+  const clips = plan?.clips || []
+  let low = 0
+  let high = clips.length - 1
+  let visual = null
+  while (low <= high) {
+    const middle = (low + high) >> 1
+    const clip = clips[middle]
+    if (time < clip.start) high = middle - 1
+    else if (time >= clip.end) low = middle + 1
+    else { visual = clip; break }
+  }
   return { mode: visual?.mode || 'normal', visual, opacity: visual ? opacityAt(visual, time) : 0 }
 }
 

@@ -8,7 +8,7 @@
 > разметки глав до готового ролика с обложкой, субтитрами, визуализацией звука
 > и единым мастер-аудио.
 
-![Version](https://img.shields.io/badge/version-3.0.0-c479ff?style=flat-square)
+![Version](https://img.shields.io/badge/version-4.0.0-c479ff?style=flat-square)
 ![Platform](https://img.shields.io/badge/platform-Windows-4b8bbe?style=flat-square)
 ![Vue](https://img.shields.io/badge/Vue-3-42b883?style=flat-square)
 ![FastAPI](https://img.shields.io/badge/FastAPI-local-009688?style=flat-square)
