@@ -1,5 +1,5 @@
 <template>
-  <div class="studio" :class="[`theme-${project.theme}`, `workspace-${activeWorkspace}`, { 'is-loading': loading, 'comic-edition': isComicEdition, 'comic-theater': comicTheater }]"
+  <div class="studio" :class="[`theme-${project.theme}`, `workspace-${activeWorkspace}`, { 'is-loading': loading, 'comic-edition': isComicEdition, 'comic-theater': comicTheater, 'comic-noir': isComicEdition && project.comic?.noirFilter !== false }]"
        :style="{ '--timeline-height': `${timelineHeight}px` }">
     <header class="topbar">
       <div class="brand" aria-label="Book Wunderwaffe Studio">
@@ -160,6 +160,11 @@
             <button v-if="isComicEdition" type="button" class="comic-open-button" @click="toggleComicTheater">
               {{ comicTheater ? 'Выйти из просмотра' : 'Смотреть Comic Edition' }}
             </button>
+            <label v-if="isComicEdition" class="caption-quick-toggle" :class="{ active: project.comic.noirFilter }">
+              <input v-model="project.comic.noirFilter" type="checkbox" />
+              <span aria-hidden="true">≋</span>
+              <b>Нуар · помехи</b>
+            </label>
             <span class="video-sync-count" :class="{ ready: videoReadyChapterCount > 0 }">
               Озвучено {{ videoReadyChapterCount }}/{{ videoBookChapterCount }}
             </span>
@@ -173,8 +178,7 @@
 
         <div ref="sceneEl" class="scene-frame"
              :data-mode="visualScene.mode"
-             :class="{ 'visual-opaque': visualScene.opacity >= 1, 'visual-active': visualScene.mode !== 'normal', 'glitch-enabled': project.glitch, 'background-unblurred': !project.backgroundBlur, 'comic-controls-visible': comicControlsVisible || !playing }"
-             @pointermove="showComicControls"
+             :class="{ 'visual-opaque': visualScene.opacity >= 1, 'visual-active': visualScene.mode !== 'normal', 'glitch-enabled': project.glitch, 'background-unblurred': !project.backgroundBlur }"
              @pointerdown.self="select('project')">
           <div class="scene-backdrop" :style="backgroundStyle"></div>
           <video v-if="videoSource" ref="videoEl" class="scene-video" :src="videoSource" playsinline
@@ -241,14 +245,18 @@
                          :comic="isComicEdition"
                          :scene-width="sceneEl?.clientWidth || 960" />
 
-          <a v-if="!isComicEdition" class="telegram-qr" :href="TELEGRAM_URL" target="_blank" rel="noopener noreferrer"
-             title="Telegram · Temple of Lizard" draggable="false" @pointerdown.stop @click.stop>
-            <span class="telegram-qr-code">
-              <QrcodeVue :value="TELEGRAM_URL" :size="256" level="H" render-as="svg"
-                          foreground="#17131d" background="#f4efe7" />
-            </span>
-            <span class="telegram-qr-copy"><b>TELEGRAM</b><small>@temple_of_lizard</small></span>
-          </a>
+          <transition name="comic-telegram">
+            <a v-if="!isComicEdition || comicTelegramVisible" class="telegram-qr"
+               :class="{ 'comic-telegram-banner': isComicEdition }"
+               :href="TELEGRAM_URL" target="_blank" rel="noopener noreferrer"
+               title="Telegram · Temple of Lizard" draggable="false" @pointerdown.stop @click.stop>
+              <span class="telegram-qr-code">
+                <QrcodeVue :value="TELEGRAM_URL" :size="256" level="H" render-as="svg"
+                            foreground="#17131d" background="#f4efe7" />
+              </span>
+              <span class="telegram-qr-copy"><b>TELEGRAM</b><small>@temple_of_lizard · новые главы</small></span>
+            </a>
+          </transition>
 
           <button v-if="!isComicEdition && layerVisible('visualizer')" type="button" class="composition-layer visualizer-layer"
                   :class="{ selected: selection.type === 'layer' && selection.id === 'visualizer' }"
@@ -259,7 +267,7 @@
             <span class="layer-resize-handle resize-se" @pointerdown.stop.prevent="onLayerResizePointerDown('visualizer', 'se', $event)"></span>
           </button>
 
-          <div v-if="!isComicEdition" class="scene-corner scene-corner-bottom">
+          <div class="scene-corner scene-corner-bottom">
             <span>{{ formatTime(currentTime) }}</span>
             <div><i :style="{ width: `${progressPercent}%` }"></i></div>
             <span>{{ formatTime(duration) }}</span>
@@ -273,18 +281,7 @@
               </header>
             </transition>
             <div v-if="currentReadingCaption" class="comic-caption" aria-live="off">{{ currentReadingCaption }}</div>
-            <div class="comic-controls" role="group" aria-label="Управление Comic Edition">
-              <button type="button" :disabled="!masterKind" title="Назад на 10 секунд" @click="seekBy(-10)">−10</button>
-              <button type="button" class="comic-play" :disabled="!masterKind" :title="playing ? 'Пауза' : 'Воспроизвести'" @click="togglePlay">
-                <span v-if="playing">Ⅱ</span><span v-else>▶</span>
-              </button>
-              <button type="button" :disabled="!masterKind" title="Вперёд на 10 секунд" @click="seekBy(10)">+10</button>
-              <span>{{ formatTime(currentTime, true) }}</span>
-              <input type="range" min="0" :max="Math.max(duration, 0.01)" step="0.01" :value="currentTime"
-                     :disabled="!masterKind" aria-label="Позиция воспроизведения" @input="seekTo(Number($event.target.value))" />
-              <span>{{ formatTime(duration, true) }}</span>
-              <button type="button" class="comic-close" title="Закрыть просмотр" @click="toggleComicTheater">×</button>
-            </div>
+            <button v-if="comicTheater" type="button" class="comic-theater-close" title="Закрыть просмотр" @click="toggleComicTheater">×</button>
           </div>
         </div>
 
@@ -1563,6 +1560,7 @@ function freshProject() {
     author: '',
     theme: 'amber',
     presentationMode: 'classic',
+    comic: { noirFilter: true, chapterTitleSeconds: 8, kenBurns: true },
     glitch: true,
     renderPreset: 'balanced',
     audioAssetId: null,
@@ -1681,8 +1679,7 @@ const audioDuration = ref(0)
 const videoDuration = ref(0)
 const playing = ref(false)
 const comicTheater = ref(false)
-const comicControlsVisible = ref(true)
-let comicControlsTimer = null
+const comicTelegramVisible = ref(true)
 const volume = ref(0.86)
 const musicPreviewPlaying = ref(false)
 const musicEqState = reactive({
@@ -1724,6 +1721,7 @@ const startingExport = ref(false)
 const renderJob = ref(null)
 let renderPoll = null
 let noticeTimer = null
+let comicTelegramTimer = null
 let playbackFrame = null
 let visualFrame = null
 let titleFitFrame = null
@@ -2592,6 +2590,7 @@ function normalizeProject(value) {
     coverMode: source.coverMode === 'background-only' ? 'background-only' : 'cover',
     backgroundBlur: source.backgroundBlur !== false,
     captions: { ...base.captions, ...(source.captions || {}) },
+    comic: { ...base.comic, ...(source.comic || {}) },
     music: { ...base.music, ...(source.music || {}) },
     musicClips: Array.isArray(source.musicClips) ? source.musicClips
       .filter((clip) => clip && typeof clip === 'object' && clip.assetId)
@@ -5870,19 +5869,22 @@ function seekTo(value) {
   applyMasterPlaybackRate(next)
 }
 
-function showComicControls() {
-  if (!isComicEdition.value) return
-  comicControlsVisible.value = true
-  clearTimeout(comicControlsTimer)
-  if (playing.value) {
-    comicControlsTimer = setTimeout(() => { comicControlsVisible.value = false }, Number(project.comic?.controlsAutoHideMs || 2200))
-  }
-}
-
 function toggleComicTheater() {
   if (!isComicEdition.value) return
   comicTheater.value = !comicTheater.value
-  showComicControls()
+  showComicTelegramBanner()
+}
+
+function showComicTelegramBanner() {
+  clearTimeout(comicTelegramTimer)
+  if (!isComicEdition.value) {
+    comicTelegramVisible.value = true
+    return
+  }
+  comicTelegramVisible.value = true
+  comicTelegramTimer = setTimeout(() => {
+    comicTelegramVisible.value = false
+  }, 6500)
 }
 
 function onMediaMetadata(kind) {
@@ -6944,14 +6946,17 @@ watch([musicSource, () => activeMusicClip.value?.id, () => project.music.enabled
 }, { flush: 'post' })
 
 watch(() => currentChapter.value?.id, (chapterId) => {
+  if (isComicEdition.value && chapterId) showComicTelegramBanner()
   if (chapterTimelineMode.value) void focusChapterTimeline(currentChapter.value)
   if (!showTextNavigator.value || !chapterId || !playing.value) return
   textNavigatorChapterId.value = chapterId
   nextTick(scrollCurrentNavigatorWordIntoView)
 })
 
-watch(playing, () => showComicControls())
-watch(isComicEdition, enabled => { if (!enabled) comicTheater.value = false })
+watch(isComicEdition, enabled => {
+  if (!enabled) comicTheater.value = false
+  showComicTelegramBanner()
+})
 
 watch(() => currentNavigatorWord.value?.index, () => {
   if (showTextNavigator.value && playing.value) nextTick(scrollCurrentNavigatorWordIntoView)
@@ -7004,7 +7009,6 @@ onMounted(() => {
 onBeforeUnmount(() => {
   visualPlanRevision += 1
   clearTimeout(visualPlanTimer)
-  clearTimeout(comicControlsTimer)
   window.removeEventListener('keydown', handleKeydown)
   window.removeEventListener('beforeunload', handleBeforeUnload)
   removeTimelinePointerListeners()
@@ -7016,6 +7020,7 @@ onBeforeUnmount(() => {
   cancelAnimationFrame(visualFrame)
   clearInterval(renderPoll)
   clearTimeout(noticeTimer)
+  clearTimeout(comicTelegramTimer)
   clearTimeout(bookAutosaveTimer)
   clearTimeout(audioExportPoll)
   clearInterval(ttsPollTimer)

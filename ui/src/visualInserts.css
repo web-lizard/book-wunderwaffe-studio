@@ -5,16 +5,35 @@
 .chapter-visual-content.comic { background: #050505; }
 .chapter-visual-content.comic .chapter-visual-backdrop { display: none; }
 .chapter-visual-content.comic .chapter-visual-image {
-  inset: -1.5% !important;
-  width: 103% !important;
-  height: 103% !important;
+  inset: -3% !important;
+  width: 106% !important;
+  height: 106% !important;
   object-fit: cover;
   transform-origin: center;
-  animation: comic-ken-burns 18s ease-in-out both;
+  will-change: transform;
+  animation: comic-ken-burns-1 24s cubic-bezier(.42, 0, .58, 1) infinite alternate;
 }
-@keyframes comic-ken-burns {
-  from { transform: scale(1.015) translate3d(-.35%, .2%, 0); }
-  to { transform: scale(1.075) translate3d(.45%, -.3%, 0); }
+.comic-noir .chapter-visual-content.comic .chapter-visual-image {
+  filter: saturate(.76) contrast(1.14) brightness(.82) sepia(.055);
+}
+.chapter-visual-content.comic-motion-2 .chapter-visual-image { animation-name: comic-ken-burns-2; animation-duration: 27s; }
+.chapter-visual-content.comic-motion-3 .chapter-visual-image { animation-name: comic-ken-burns-3; animation-duration: 22s; }
+.chapter-visual-content.comic-motion-4 .chapter-visual-image { animation-name: comic-ken-burns-4; animation-duration: 29s; }
+@keyframes comic-ken-burns-1 {
+  from { transform: scale(1.01) translate3d(-1.1%, .55%, 0); }
+  to { transform: scale(1.105) translate3d(1.05%, -.7%, 0); }
+}
+@keyframes comic-ken-burns-2 {
+  from { transform: scale(1.025) translate3d(1.1%, -.55%, 0); }
+  to { transform: scale(1.115) translate3d(-.9%, .7%, 0); }
+}
+@keyframes comic-ken-burns-3 {
+  from { transform: scale(1.015) translate3d(-.25%, -1%, 0); }
+  to { transform: scale(1.12) translate3d(.45%, .85%, 0); }
+}
+@keyframes comic-ken-burns-4 {
+  from { transform: scale(1.045) translate3d(.65%, .7%, 0); }
+  to { transform: scale(1.125) translate3d(-.65%, -.75%, 0); }
 }
 .scene-frame.visual-opaque > .cover-layer,
 .scene-frame.visual-opaque > .title-layer,

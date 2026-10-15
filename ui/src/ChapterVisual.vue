@@ -1,5 +1,5 @@
 <template>
-  <div class="chapter-visual-content" :class="{ comic }" :style="{ opacity }" aria-hidden="true">
+  <div class="chapter-visual-content" :class="[{ comic }, comicMotionClass]" :style="{ opacity }" aria-hidden="true">
     <div class="chapter-visual-backdrop" :style="backdropStyle"></div>
     <img class="chapter-visual-image" :src="src" :style="percentRect(clip.layout.image)" alt="" />
     <div v-if="!comic" class="chapter-visual-badge" :style="{ ...percentRect(clip.layout.badge), fontSize: `${Math.max(9, sceneWidth * 0.0125)}px` }">{{ clip.chapterTitle }}</div>
@@ -15,4 +15,10 @@ const backdropStyle = computed(() => ({
   backgroundImage: `url("${props.src.replaceAll('"', '%22')}")`,
   filter: `blur(${props.clip.layout.blur * props.sceneWidth / 1920}px) brightness(${props.clip.layout.brightness})`,
 }))
+const comicMotionClass = computed(() => {
+  const value = String(props.clip?.id || '')
+  let hash = 0
+  for (const character of value) hash = (hash * 31 + character.charCodeAt(0)) >>> 0
+  return `comic-motion-${(hash % 4) + 1}`
+})
 </script>

@@ -16,9 +16,30 @@ try {
   await page.waitForFunction(() => document.querySelector('.scene-frame')?.dataset.mode === 'chapter_visual')
   const rootClass = await page.locator('.studio').getAttribute('class')
   if (!rootClass?.includes('comic-edition')) throw new Error(`Comic mode is not active: ${rootClass}`)
-  if (await page.locator('.telegram-qr').count()) throw new Error('Classic QR leaked into comic viewer')
+  if (!rootClass?.includes('comic-noir')) throw new Error(`Comic noir filter is not active: ${rootClass}`)
+  if (!(await page.locator('.telegram-qr').count())) throw new Error('Telegram QR is missing from comic viewer')
+  if (!(await page.locator('.scene-corner-bottom').count())) throw new Error('Compact timeline is missing from comic viewer')
+  if (await page.locator('.comic-controls').count()) throw new Error('Oversized comic controls are still present')
 
-  const checkpoints = [0.8, 32.8, 195.8, 1055.432, 2327.048, 3945.2]
+  const checkpoints = [
+    0.8,
+    165.254 + 90,
+    893.756 + 235,
+    1971.397 + 1,
+    3344.156 + 1,
+    3344.156 + 454,
+    4176.366 + 1,
+    4176.366 + 331,
+    4824.653 + 1,
+    4824.653 + 713,
+    4824.653 + 1308,
+    6244.579 + 1,
+    6244.579 + 866,
+    6244.579 + 1536,
+    7848.552 + 1,
+    7848.552 + 701,
+    7848.552 + 1391,
+  ]
   const observed = []
   for (const time of checkpoints) {
     await page.locator('.transport-scrubber').evaluate((input, value) => {
@@ -39,14 +60,18 @@ try {
   await page.locator('.comic-caption').waitFor()
   if (screenshot) await page.screenshot({ path: screenshot })
 
-  const before = await page.locator('.comic-controls input[type="range"]').inputValue()
-  await page.locator('.comic-play').click()
-  await page.waitForTimeout(700)
-  const after = await page.locator('.comic-controls input[type="range"]').inputValue()
-  if (!(Number(after) > Number(before))) throw new Error(`Playback did not advance: ${before} -> ${after}`)
-  await page.locator('.comic-play').click()
   await page.keyboard.press('Escape')
   if (await page.locator('.studio.comic-theater').count()) throw new Error('Escape did not close theater mode')
+  await page.locator('.transport-scrubber').evaluate(input => {
+    input.value = '1'
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+  })
+  const before = await page.locator('audio').first().evaluate(audio => audio.currentTime)
+  await page.locator('.transport .play-button').click()
+  await page.waitForTimeout(700)
+  const after = await page.locator('audio').first().evaluate(audio => audio.currentTime)
+  if (!(Number(after) > Number(before))) throw new Error(`Playback did not advance: ${before} -> ${after}`)
+  await page.locator('.transport .play-button').click()
   if (errors.length) throw new Error(`Browser errors: ${errors.join(' | ')}`)
   console.log(JSON.stringify({ ok: true, observed, playback: { before, after }, screenshot }, null, 2))
 } finally {
