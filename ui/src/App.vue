@@ -22,7 +22,7 @@
         </div>
         <label class="global-project-picker">
           <span>Проект</span>
-          <select :value="activeProjectUuid || ''" :disabled="switchingProject" @change="switchProject($event.target.value)">
+          <select :value="activeProjectUuid || ''" :aria-busy="switchingProject" @change="switchProject($event.target.value)">
             <option value="" disabled>{{ projectCatalog.length ? 'Выберите проект' : 'Проекты не найдены' }}</option>
             <option v-for="item in projectCatalog" :key="item.uuid" :value="item.uuid">
               {{ item.title }} · {{ projectKindLabel(item.project_kind) }}
@@ -1460,6 +1460,8 @@
 
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { createApiClient } from './apiClient.js'
+import { createLatestSaveCoordinator, createSerialPoller } from './asyncControl.js'
 import { chapterColor, followWord } from './editorNavigation.js'
 import { sceneAt } from './scenePlan.js'
 import ChapterVisual from './ChapterVisual.vue'
@@ -1469,6 +1471,7 @@ import QrcodeVue from 'qrcode.vue'
 const VISUAL_CONTENT_COMPONENTS = { chapter_visual: ChapterVisual }
 
 const API = import.meta.env.VITE_API_URL || '/api'
+const apiRequest = createApiClient(API)
 const TELEGRAM_URL = 'https://t.me/temple_of_lizard'
 const AUDIO_EXT = new Set(['mp3', 'wav', 'm4a', 'aac', 'flac', 'ogg', 'opus'])
 const VIDEO_EXT = new Set(['mp4', 'mov', 'm4v', 'webm', 'mkv', 'avi'])
@@ -1600,6 +1603,8 @@ const managerProjectCatalog = ref([])
 const activeProjectUuid = ref('')
 const activeProjectRecord = ref(null)
 const switchingProject = ref(false)
+let queuedProjectSwitch = null
+let projectSwitchPromise = null
 const activeVideoEditionId = ref(null)
 const showProjectManager = ref(false)
 const projectManagerSearch = ref('')
@@ -1649,7 +1654,7 @@ let bookAutosaveTimer = null
 let metaNotesSaveTimer = null
 let bookEditRevision = 0
 let bookSavePromise = null
-let ttsPollTimer = null
+let ttsPoller = null
 let ttsPollFailures = 0
 let bookPlayerLoadToken = 0
 let bookPlayerShouldAutoplay = false
@@ -1660,6 +1665,7 @@ const dirty = ref(false)
 const saving = ref(false)
 const videoPreparing = ref(false)
 const hydrating = ref(true)
+let videoEditRevision = 0
 const assetInput = ref(null)
 const musicInput = ref(null)
 const projectInput = ref(null)
@@ -1724,7 +1730,7 @@ const exportTest = ref(true)
 const exportReadiness = ref(null)
 const startingExport = ref(false)
 const renderJob = ref(null)
-let renderPoll = null
+let renderPoller = null
 let noticeTimer = null
 let comicTelegramTimer = null
 let playbackFrame = null
@@ -1757,10 +1763,24 @@ let timelineResizeMove = null
 let timelineResizeUp = null
 let timelinePanMove = null
 let timelinePanUp = null
+let layerGestureCleanup = null
 let resumeAfterTimelineScrub = false
 const visualizerLevels = new Float32Array(72)
 const visualizerPeaks = new Float32Array(72)
 const objectUrls = new Set()
+const projectSaver = createLatestSaveCoordinator({
+  capture: () => ({
+    revision: videoEditRevision,
+    projectUuid: activeProjectUuid.value,
+    editionId: activeVideoEditionId.value,
+    payload: serializeProject(),
+  }),
+  persist: persistProjectSnapshot,
+  isCurrent: snapshot => (
+    snapshot.revision === videoEditRevision
+    && snapshot.projectUuid === activeProjectUuid.value
+  ),
+})
 
 const assetIndex = computed(() => new Map(project.materials.map(item => [String(item.id), item])))
 const assetById = (id) => assetIndex.value.get(String(id)) || null
@@ -3058,18 +3078,6 @@ function setNotice(text, kind = 'info', timeout = 4200) {
   if (timeout) noticeTimer = setTimeout(() => { notice.text = '' }, timeout)
 }
 
-async function apiRequest(path, options = {}) {
-  const response = await fetch(`${API}${path}`, options)
-  const text = await response.text()
-  let data = null
-  try { data = text ? JSON.parse(text) : {} } catch { data = { detail: text } }
-  if (!response.ok) {
-    const detail = typeof data.detail === 'string' ? data.detail : data.detail?.message
-    throw new Error(detail || data.message || `HTTP ${response.status}`)
-  }
-  return data
-}
-
 function projectKindLabel(kind) {
   return ({ book: 'книга', video: 'видео', hybrid: 'книга + видео' }[kind] || kind)
 }
@@ -3516,22 +3524,21 @@ async function flushActiveWorkspace() {
     const saved = await saveCurrentChapter({ silent: true })
     if (!saved) return false
   }
-  if (dirty.value && activeVideoEditionId.value) {
+  if (dirty.value) {
     const saved = await saveProject({ silent: true })
     if (!saved) return false
   }
   return true
 }
 
-async function switchProject(projectUuid, { initial = false } = {}) {
-  if (!projectUuid || switchingProject.value) return
-  if (!initial && projectUuid === activeProjectUuid.value) return
-  switchingProject.value = true
+async function performProjectSwitch(projectUuid, { initial = false } = {}) {
+  if (!initial && projectUuid === activeProjectUuid.value) return true
   try {
     if (!initial && !(await flushActiveWorkspace())) {
       setNotice('Переключение отменено: текущие изменения не сохранены', 'error')
-      return
+      return false
     }
+    stopTtsPolling()
     pauseAll()
     const record = await apiRequest(`/projects/${encodeURIComponent(projectUuid)}/open`, { method: 'POST' })
     activeProjectUuid.value = projectUuid
@@ -3575,9 +3582,33 @@ async function switchProject(projectUuid, { initial = false } = {}) {
     dirty.value = false
     await loadProjectCatalog()
     setNotice(`Открыт проект «${record.title}»`, 'success', 2200)
+    return true
   } catch (error) {
     setNotice(`Не удалось открыть проект: ${error.message}`, 'error', 7000)
+    return false
+  }
+}
+
+async function switchProject(projectUuid, options = {}) {
+  if (!projectUuid) return false
+  queuedProjectSwitch = { projectUuid, options }
+  if (projectSwitchPromise) return projectSwitchPromise
+
+  switchingProject.value = true
+  projectSwitchPromise = (async () => {
+    let switched = true
+    while (queuedProjectSwitch) {
+      const request = queuedProjectSwitch
+      queuedProjectSwitch = null
+      switched = await performProjectSwitch(request.projectUuid, request.options)
+      if (!switched) queuedProjectSwitch = null
+    }
+    return switched
+  })()
+  try {
+    return await projectSwitchPromise
   } finally {
+    projectSwitchPromise = null
     switchingProject.value = false
   }
 }
@@ -4176,19 +4207,31 @@ function formatTtsDiagnosticEvent(event) {
   return `[${formatTtsDiagnosticTime(event?.timestamp)}] ${level} ${event?.message || event?.event || 'событие'}${details}`
 }
 
+function stopTtsPolling() {
+  ttsPoller?.stop()
+  ttsPoller = null
+}
+
+function startTtsPolling(task, intervalMs) {
+  stopTtsPolling()
+  ttsPoller = createSerialPoller(task, { intervalMs })
+  ttsPoller.start()
+}
+
 function pollTtsBook() {
-  clearInterval(ttsPollTimer)
+  const projectUuid = activeProjectUuid.value
   ttsPollFailures = 0
-  ttsPollTimer = setInterval(async () => {
+  startTtsPolling(async () => {
     try {
       ttsNow.value = Date.now()
-      const result = await apiRequest(`/projects/${encodeURIComponent(activeProjectUuid.value)}/tts-jobs`)
+      const result = await apiRequest(`/projects/${encodeURIComponent(projectUuid)}/tts-jobs`)
+      if (projectUuid !== activeProjectUuid.value) return false
       ttsPollFailures = 0
       ttsJobs.value = result.jobs || []
       if (!ttsJobs.value.some((job) => ['queued', 'running'].includes(job.status))) {
-        clearInterval(ttsPollTimer)
         const draftSaved = await saveCurrentChapter({ silent: true })
-        const record = await apiRequest(`/projects/${encodeURIComponent(activeProjectUuid.value)}`)
+        const record = await apiRequest(`/projects/${encodeURIComponent(projectUuid)}`)
+        if (projectUuid !== activeProjectUuid.value) return false
         installBookRecord(record, { preserveDraft: !draftSaved })
         if (activeVideoEditionId.value && draftSaved) {
           try { await rebuildBookVideo(record) } catch { /* video can be rebuilt on next open */ }
@@ -4204,6 +4247,7 @@ function pollTtsBook() {
           failed || cancelled ? 'warning' : 'success',
           7000,
         )
+        return false
       }
     } catch (error) {
       ttsPollFailures += 1
@@ -4211,23 +4255,25 @@ function pollTtsBook() {
         setNotice(`Не удаётся обновить прогресс: ${error.message}. Продолжаю переподключаться.`, 'warning', 6000)
       }
     }
+    return true
   }, 1500)
 }
 
 function pollTtsJob(jobUuid) {
-  clearInterval(ttsPollTimer)
+  const projectUuid = activeProjectUuid.value
   ttsPollFailures = 0
-  ttsPollTimer = setInterval(async () => {
+  startTtsPolling(async () => {
     try {
       ttsNow.value = Date.now()
       const job = await apiRequest(`/tts-jobs/${encodeURIComponent(jobUuid)}`)
+      if (projectUuid !== activeProjectUuid.value) return false
       ttsPollFailures = 0
       const index = ttsJobs.value.findIndex((item) => item.uuid === jobUuid)
       if (index >= 0) ttsJobs.value[index] = job
       if (!['queued', 'running'].includes(job.status)) {
-        clearInterval(ttsPollTimer)
         const draftSaved = await saveCurrentChapter({ silent: true })
-        const record = await apiRequest(`/projects/${encodeURIComponent(activeProjectUuid.value)}`)
+        const record = await apiRequest(`/projects/${encodeURIComponent(projectUuid)}`)
+        if (projectUuid !== activeProjectUuid.value) return false
         installBookRecord(record, { preserveDraft: !draftSaved })
         if (job.status === 'done') {
           if (activeVideoEditionId.value && draftSaved) {
@@ -4241,6 +4287,7 @@ function pollTtsJob(jobUuid) {
         } else {
           setNotice(job.user_error || 'Модуль озвучки не запущен. Проверьте установку компонентов TTS.', 'error', 8000)
         }
+        return false
       }
     } catch (error) {
       ttsPollFailures += 1
@@ -4248,6 +4295,7 @@ function pollTtsJob(jobUuid) {
         setNotice(`Не удаётся обновить прогресс: ${error.message}. Продолжаю переподключаться.`, 'warning', 6000)
       }
     }
+    return true
   }, 1200)
 }
 
@@ -4647,7 +4695,7 @@ async function loadInitialProject() {
   loading.value = true
   hydrating.value = true
   try {
-    const health = await apiRequest('/health')
+    const health = await apiRequest('/health', { timeoutMs: 4000 })
     backend.online = !!health.ok
     backend.version = health.version || ''
     backend.python = health.python || ''
@@ -4766,39 +4814,58 @@ function newProject() {
   setNotice('Создан новый проект', 'success')
 }
 
-async function saveProject({ silent = false } = {}) {
-  if (saving.value) return false
-  saving.value = true
-  const payload = serializeProject()
-  localStorage.setItem('book-wunderwaffe-project', JSON.stringify(payload))
+async function persistProjectSnapshot(snapshot) {
+  let browserCached = true
   try {
-    if (backend.online) {
-      if (activeProjectUuid.value && !activeVideoEditionId.value) {
-        const edition = await apiRequest(`/projects/${encodeURIComponent(activeProjectUuid.value)}/video-editions`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ title: project.title || null }),
-        })
-        activeVideoEditionId.value = edition.id
-      }
-      const query = activeProjectUuid.value
-        ? `?project_uuid=${encodeURIComponent(activeProjectUuid.value)}&edition_id=${encodeURIComponent(activeVideoEditionId.value)}`
-        : ''
-      const saved = await apiRequest(`/editor-project${query}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      })
-      if (saved.edition_id) activeVideoEditionId.value = saved.edition_id
-    }
+    localStorage.setItem('book-wunderwaffe-project', JSON.stringify(snapshot.payload))
+  } catch (error) {
+    browserCached = false
+    if (!backend.online) throw new Error(`Локальное хранилище недоступно: ${error.message}`)
+  }
+
+  if (!backend.online) return { browserCached }
+  let editionId = snapshot.editionId
+  if (snapshot.projectUuid && !editionId) {
+    const edition = await apiRequest(`/projects/${encodeURIComponent(snapshot.projectUuid)}/video-editions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: snapshot.payload.title || null }),
+    })
+    editionId = edition.id
+    if (snapshot.projectUuid === activeProjectUuid.value) activeVideoEditionId.value = editionId
+  }
+  const query = snapshot.projectUuid
+    ? `?project_uuid=${encodeURIComponent(snapshot.projectUuid)}&edition_id=${encodeURIComponent(editionId)}`
+    : ''
+  const saved = await apiRequest(`/editor-project${query}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(snapshot.payload),
+  })
+  if (saved.edition_id && snapshot.projectUuid === activeProjectUuid.value) {
+    activeVideoEditionId.value = saved.edition_id
+  }
+  return { browserCached }
+}
+
+async function saveProject({ silent = false } = {}) {
+  saving.value = true
+  try {
+    const { result } = await projectSaver.save()
     dirty.value = false
-    if (!silent) setNotice(backend.online ? 'Проект сохранён' : 'Проект сохранён в браузере', 'success')
+    if (!silent) {
+      if (backend.online && !result.browserCached) {
+        setNotice('Проект сохранён на сервере, но локальный кэш браузера переполнен', 'warning', 7000)
+      } else {
+        setNotice(backend.online ? 'Проект сохранён' : 'Проект сохранён в браузере', 'success')
+      }
+    }
     return true
   } catch (error) {
     setNotice(`Не удалось сохранить: ${error.message}`, 'error', 7000)
     return false
   } finally {
-    saving.value = false
+    saving.value = projectSaver.running
   }
 }
 
@@ -5178,6 +5245,29 @@ function setVisualizerColorPreset(id) {
   dirty.value = true
 }
 
+function stopLayerGesture() {
+  layerGestureCleanup?.()
+  layerGestureCleanup = null
+}
+
+function startLayerGesture(move, onEnd = null) {
+  stopLayerGesture()
+  const end = () => {
+    const cleanup = layerGestureCleanup
+    layerGestureCleanup = null
+    cleanup?.()
+    onEnd?.()
+  }
+  layerGestureCleanup = () => {
+    window.removeEventListener('pointermove', move)
+    window.removeEventListener('pointerup', end)
+    window.removeEventListener('pointercancel', end)
+  }
+  window.addEventListener('pointermove', move)
+  window.addEventListener('pointerup', end)
+  window.addEventListener('pointercancel', end)
+}
+
 function onLayerPointerDown(id, event) {
   if (event.button !== 0) return
   select('layer', id)
@@ -5192,12 +5282,7 @@ function onLayerPointerDown(id, event) {
     layer.y = Math.max(0, Math.min(100 - layer.h, start.y + dy))
     dirty.value = true
   }
-  const up = () => {
-    window.removeEventListener('pointermove', move)
-    window.removeEventListener('pointerup', up)
-  }
-  window.addEventListener('pointermove', move)
-  window.addEventListener('pointerup', up)
+  startLayerGesture(move)
 }
 
 function onLayerResizePointerDown(id, axis, event) {
@@ -5224,14 +5309,7 @@ function onLayerResizePointerDown(id, axis, event) {
     }
     dirty.value = true
   }
-  const up = () => {
-    window.removeEventListener('pointermove', move)
-    window.removeEventListener('pointerup', up)
-    window.removeEventListener('pointercancel', up)
-  }
-  window.addEventListener('pointermove', move)
-  window.addEventListener('pointerup', up)
-  window.addEventListener('pointercancel', up)
+  startLayerGesture(move)
 }
 
 function resetLayer(id) {
@@ -6726,8 +6804,7 @@ async function openExport() {
       const running = await apiRequest('/render/status')
       if (running.active && running.latest) {
         renderJob.value = running.latest
-        clearInterval(renderPoll)
-        renderPoll = setInterval(() => pollRender(running.latest.id), 1200)
+        startRenderPolling(running.latest.id)
         return
       }
       if (dirty.value) {
@@ -6887,8 +6964,7 @@ async function startExport() {
     if (!exportReadiness.value.ready || exportIssue.value) return
     const response = await apiRequest(exportTest.value ? '/render/test' : '/render/full', { method: 'POST' })
     renderJob.value = { id: response.job_id, status: 'running', progress: 0, log: [], download_url: response.download_url || '' }
-    pollRender(response.job_id)
-    renderPoll = setInterval(() => pollRender(response.job_id), 1200)
+    startRenderPolling(response.job_id)
   } catch (error) {
     setNotice(`Экспорт не запущен: ${error.message}`, 'error', 7500)
   } finally {
@@ -6896,16 +6972,27 @@ async function startExport() {
   }
 }
 
+function stopRenderPolling() {
+  renderPoller?.stop()
+  renderPoller = null
+}
+
+function startRenderPolling(jobId) {
+  stopRenderPolling()
+  renderPoller = createSerialPoller(() => pollRender(jobId), { intervalMs: 1200, retryMs: 2400 })
+  renderPoller.start()
+}
+
 async function pollRender(jobId) {
   try {
     const job = await apiRequest(`/jobs/${encodeURIComponent(jobId)}`)
     renderJob.value = job
     if (job.status === 'done' || job.status === 'failed') {
-      clearInterval(renderPoll)
-      renderPoll = null
       if (job.status === 'done') setNotice('Экспорт завершён', 'success', 7000)
+      return false
     }
   } catch { /* keep polling transient backend errors */ }
+  return true
 }
 
 function releaseObjectUrls() {
@@ -7055,7 +7142,10 @@ watch(titleLayerEl, (element, previous) => {
 }, { flush: 'post' })
 
 watch(project, () => {
-  if (!hydrating.value) dirty.value = true
+  if (!hydrating.value) {
+    videoEditRevision += 1
+    dirty.value = true
+  }
 }, { deep: true })
 
 onMounted(() => {
@@ -7083,16 +7173,17 @@ onBeforeUnmount(() => {
   removeTimelinePointerListeners()
   removeTimelinePanListeners()
   removeTimelineResizeListeners()
+  stopLayerGesture()
   document.body.classList.remove('resizing-timeline')
   stopBookPlayer()
   pauseAll()
   cancelAnimationFrame(visualFrame)
-  clearInterval(renderPoll)
+  stopRenderPolling()
   clearTimeout(noticeTimer)
   clearTimeout(comicTelegramTimer)
   clearTimeout(bookAutosaveTimer)
   clearTimeout(audioExportPoll)
-  clearInterval(ttsPollTimer)
+  stopTtsPolling()
   titleResizeObserver?.disconnect()
   timelineResizeObserver?.disconnect()
   if (titleFitFrame !== null) cancelAnimationFrame(titleFitFrame)

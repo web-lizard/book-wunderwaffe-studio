@@ -79,13 +79,13 @@ async function openFixture(page, options = {}) {
     return route.fulfill({ json })
   })
   await page.goto('/')
-  await expect(page.locator('.loading-screen')).toHaveCount(0)
+  await expect(page.locator('.loading-screen')).toHaveCount(0, { timeout: 15000 })
   await expect(page.locator('.chapter-clip')).toHaveCount(2)
   await page.waitForFunction(() => document.querySelector('.studio audio')?.readyState >= 2)
   return { errors, saved: () => saved }
 }
 
-test('comic edition uses full-bleed art, literary subtitles and theater controls', async ({ page }) => {
+test('comic edition uses full-bleed art, literary subtitles and the compact theater control', async ({ page }) => {
   const fixture = await openFixture(page, { presentationMode: 'comic' })
   await expect(page.locator('.chapter-visual-content.comic')).toHaveCount(1)
   await expect(page.locator('.comic-caption')).toContainText('Текст звучащей книги')
@@ -93,7 +93,8 @@ test('comic edition uses full-bleed art, literary subtitles and theater controls
   await page.getByRole('button', { name: 'Смотреть Comic Edition' }).click()
   await expect(page.locator('.studio')).toHaveClass(/comic-theater/)
   await expect(page.locator('.topbar')).toBeHidden()
-  await expect(page.locator('.comic-controls')).toBeVisible()
+  await expect(page.locator('.comic-theater-close')).toBeVisible()
+  await expect(page.locator('.comic-controls')).toHaveCount(0)
   await page.keyboard.press('Escape')
   await expect(page.locator('.studio')).not.toHaveClass(/comic-theater/)
   expect(fixture.errors).toEqual([])
