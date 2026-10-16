@@ -3,12 +3,13 @@ import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
 const app = readFileSync(new URL('../src/App.vue', import.meta.url), 'utf8')
+const model = readFileSync(new URL('../src/editorModel.js', import.meta.url), 'utf8')
 const visuals = readFileSync(new URL('../src/ChapterVisual.vue', import.meta.url), 'utf8')
 const styles = readFileSync(new URL('../src/style.css', import.meta.url), 'utf8')
 const visualStyles = readFileSync(new URL('../src/visualInserts.css', import.meta.url), 'utf8')
 
 test('classic projects remain the default while comic mode is project-specific', () => {
-  assert.match(app, /presentationMode:\s*'classic'/)
+  assert.match(model, /presentationMode:\s*'classic'/)
   assert.match(app, /project\.presentationMode === 'comic'/)
   assert.match(app, /v-model="project\.presentationMode"/)
 })

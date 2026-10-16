@@ -4,6 +4,7 @@ import test from 'node:test'
 
 const app = readFileSync(new URL('../src/App.vue', import.meta.url), 'utf8')
 const scenePlan = readFileSync(new URL('../src/scenePlan.js', import.meta.url), 'utf8')
+const asyncControl = readFileSync(new URL('../src/asyncControl.js', import.meta.url), 'utf8')
 
 test('large visual projects use thumbnails and render only the active full-size frame', () => {
   assert.match(app, /project-thumbnail/)
@@ -41,8 +42,8 @@ test('editor serializes saves and background polling instead of racing requests'
 })
 
 test('editor cleans up cancellable gestures and uses bounded API requests', () => {
-  assert.match(app, /stopLayerGesture\(\)/)
-  assert.match(app, /window\.addEventListener\('pointercancel', end\)/)
+  assert.match(app, /layerGestures\.stop\(\)/)
+  assert.match(asyncControl, /addEventListener\('pointercancel', end\)/)
   assert.match(app, /createApiClient\(API\)/)
   assert.match(app, /apiRequest\('\/health', \{ timeoutMs: 4000 \}\)/)
 })

@@ -49,8 +49,12 @@ export function createSerialPoller(task, { intervalMs = 1000, retryMs = interval
       timer = setTimeout(tick, Math.max(0, Number(delay) || 0))
     }
     const tick = async () => {
-      if (!active || ownGeneration !== generation || running) return
+      if (!active || ownGeneration !== generation) return
       timer = null
+      if (running) {
+        schedule(Math.min(25, Math.max(1, Number(intervalMs) || 1)))
+        return
+      }
       running = true
       let keepGoing = true
       let delay = intervalMs
@@ -77,5 +81,42 @@ export function createSerialPoller(task, { intervalMs = 1000, retryMs = interval
     stop,
     get active() { return active },
     get running() { return running },
+  }
+}
+
+export function createPointerGestureController(eventTarget) {
+  if (!eventTarget?.addEventListener || !eventTarget?.removeEventListener) {
+    throw new TypeError('pointer gesture target must implement EventTarget')
+  }
+  let cleanup = null
+
+  const stop = () => {
+    cleanup?.()
+    cleanup = null
+  }
+
+  const start = (move, onEnd = null) => {
+    if (typeof move !== 'function') throw new TypeError('pointer move handler must be a function')
+    stop()
+    const end = event => {
+      const release = cleanup
+      cleanup = null
+      release?.()
+      onEnd?.(event)
+    }
+    cleanup = () => {
+      eventTarget.removeEventListener('pointermove', move)
+      eventTarget.removeEventListener('pointerup', end)
+      eventTarget.removeEventListener('pointercancel', end)
+    }
+    eventTarget.addEventListener('pointermove', move)
+    eventTarget.addEventListener('pointerup', end)
+    eventTarget.addEventListener('pointercancel', end)
+  }
+
+  return {
+    start,
+    stop,
+    get active() { return cleanup !== null },
   }
 }

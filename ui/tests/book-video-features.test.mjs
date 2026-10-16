@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
 const source = readFileSync(new URL('../src/App.vue', import.meta.url), 'utf8')
+const model = readFileSync(new URL('../src/editorModel.js', import.meta.url), 'utf8')
 
 test('book audio can be played, dragged, and assembled for video', () => {
   assert.match(source, /<audio[^>]+controls/)
@@ -29,10 +30,10 @@ test('chapter images and optional reading captions reach the video workspace', (
 
 test('reading captions are a movable layer with adjustable typography', () => {
   assert.match(source, /onLayerPointerDown\('caption'/)
-  assert.match(source, /caption:\s*\{[^}]+fontWeight:\s*400/)
+  assert.match(model, /caption:\s*\{[^}]+fontWeight:\s*400/)
   assert.match(source, /selectedLayer\.fontWeight/)
   assert.match(source, /--caption-weight/)
-  assert.match(source, /source\.layers\?\.caption/)
+  assert.match(model, /source\.layers\?\.caption/)
 })
 
 test('video projects support a separate music bed with volume and three-band EQ', () => {
@@ -111,17 +112,17 @@ test('book chapters support chapter zero, drag reorder, and race-safe text synch
 })
 
 test('video supports background-only mode, sharp backdrops, layer resizing, and twelve visualizer palettes', () => {
-  assert.match(source, /coverMode:\s*'cover'/)
-  assert.match(source, /backgroundBlur:\s*true/)
+  assert.match(model, /coverMode:\s*'cover'/)
+  assert.match(model, /backgroundBlur:\s*true/)
   assert.match(source, /setCoverEnabled/)
   assert.match(source, /background-unblurred/)
   assert.match(source, /onLayerResizePointerDown/)
   assert.match(source, /resize-e/)
   assert.match(source, /resize-s/)
   assert.match(source, /resize-se/)
-  const presets = source.slice(
-    source.indexOf('const VISUALIZER_COLOR_PRESETS'),
-    source.indexOf('const DEFAULT_LAYERS'),
+  const presets = model.slice(
+    model.indexOf('const VISUALIZER_COLOR_PRESETS'),
+    model.indexOf('const DEFAULT_LAYERS'),
   )
   assert.equal((presets.match(/\{ id:/g) || []).length, 12)
   assert.match(source, /setVisualizerColorPreset/)
@@ -177,7 +178,7 @@ test('chapter items support ripple time stretching with rate-aware playback', ()
 test('text navigator maps words to the timeline and plays selected excerpts', () => {
   assert.match(source, /Текст книги/)
   assert.match(source, /id="text-navigator-title"/)
-  assert.match(source, /function chapterTimelineWords/)
+  assert.match(model, /function chapterTimelineWords/)
   assert.match(source, /event\.shiftKey/)
   assert.match(source, /seekTo\(word\.start\)/)
   assert.match(source, /scrollTimelineToTime\(word\.start\)/)
@@ -192,8 +193,8 @@ test('book and video word navigation prefer exact TTS boundaries', () => {
   assert.match(source, /currentBookPlayerWord/)
   assert.match(source, /seekBookPlayer\(word\.start\)/)
   assert.match(source, /selectedBookAudioMetadata\.value\.word_timings/)
-  assert.match(source, /function applyExactWordTimings/)
-  assert.match(source, /chapter\?\.wordTimings \|\| chapter\?\.word_timings/)
+  assert.match(model, /function applyExactWordTimings/)
+  assert.match(model, /chapter\?\.wordTimings \|\| chapter\?\.word_timings/)
   assert.match(source, /wordTimings: Array\.isArray\(timing\?\.word_timings\)/)
 })
 

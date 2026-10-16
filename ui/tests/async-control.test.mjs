@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { createLatestSaveCoordinator, createSerialPoller } from '../src/asyncControl.js'
+import { createLatestSaveCoordinator, createPointerGestureController, createSerialPoller } from '../src/asyncControl.js'
 
 const wait = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds))
 
@@ -88,4 +88,47 @@ test('stopping a poller prevents a completed request from scheduling another one
   release()
   await wait(10)
   assert.equal(calls, 1)
+})
+
+test('restarting one poller during an in-flight request does not lose the restart', async () => {
+  let calls = 0
+  let concurrent = 0
+  let maximum = 0
+  let releaseFirst
+  let firstStarted
+  let secondFinished
+  const firstGate = new Promise(resolve => { releaseFirst = resolve })
+  const started = new Promise(resolve => { firstStarted = resolve })
+  const finished = new Promise(resolve => { secondFinished = resolve })
+  const poller = createSerialPoller(async () => {
+    calls += 1
+    concurrent += 1
+    maximum = Math.max(maximum, concurrent)
+    if (calls === 1) { firstStarted(); await firstGate }
+    concurrent -= 1
+    if (calls === 2) { secondFinished(); return false }
+    return true
+  }, { intervalMs: 1 })
+  poller.start()
+  await started
+  poller.start()
+  releaseFirst()
+  await finished
+  assert.equal(calls, 2)
+  assert.equal(maximum, 1)
+})
+
+test('pointer gesture controller replaces old gestures and cleans up cancel listeners', () => {
+  const target = new EventTarget()
+  const moves = []
+  const endings = []
+  const gestures = createPointerGestureController(target)
+  gestures.start(event => moves.push(`old:${event.type}`), () => endings.push('old'))
+  gestures.start(event => moves.push(`new:${event.type}`), event => endings.push(event.type))
+  target.dispatchEvent(new Event('pointermove'))
+  target.dispatchEvent(new Event('pointercancel'))
+  target.dispatchEvent(new Event('pointermove'))
+  assert.deepEqual(moves, ['new:pointermove'])
+  assert.deepEqual(endings, ['pointercancel'])
+  assert.equal(gestures.active, false)
 })
