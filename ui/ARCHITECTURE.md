@@ -21,8 +21,9 @@ The editor keeps browser integration in `App.vue` and moves reusable behaviour i
 4. Every global event listener, timer, object URL and audio context needs an explicit unmount cleanup path.
 5. Project-schema changes require normalization tests for current, legacy and malformed input.
 6. Timeline lanes must render viewport-indexed collections instead of complete project collections.
-7. High-frequency media callbacks must not invalidate the root component faster than the configured UI frame gate.
+7. High-frequency media callbacks update simple visual properties directly on animation frames and must not invalidate the root component faster than the configured UI frame gate. Semantic boundaries such as chapter, scene, music clip and visual changes force an immediate reactive commit.
 8. Large replacement-only payloads such as waveform samples and compiled scene plans use shallow reactivity.
+9. Long word-level documents must be grouped into memoized paragraph blocks; off-screen paragraphs use native layout and paint containment.
 
 ## Performance verification
 

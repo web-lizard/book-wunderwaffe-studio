@@ -233,6 +233,16 @@ export function timedTextWords(value, startValue, endValue, exactTimings = []) {
   return applyExactWordTimings(estimated, exactTimings, start, end)
 }
 
+export function wordsByParagraph(words) {
+  const paragraphs = []
+  for (const word of words || []) {
+    const index = Math.max(0, Number(word?.paragraph) || 0)
+    if (!paragraphs[index]) paragraphs[index] = []
+    paragraphs[index].push(word)
+  }
+  return paragraphs.filter(Boolean)
+}
+
 export function chapterSourceStart(chapter) {
   const value = Number(chapter?.sourceStartSeconds ?? chapter?.source_start_seconds)
   return Number.isFinite(value) ? Math.max(0, value) : Math.max(0, Number(chapter?.start_seconds) || 0)

@@ -179,7 +179,7 @@
 
         <div ref="sceneEl" class="scene-frame"
              :data-mode="visualScene.mode"
-             :class="{ 'visual-opaque': visualScene.opacity >= 1, 'visual-active': visualScene.mode !== 'normal', 'glitch-enabled': project.glitch, 'background-unblurred': !project.backgroundBlur }"
+             :class="{ 'visual-active': visualScene.mode !== 'normal', 'glitch-enabled': project.glitch, 'background-unblurred': !project.backgroundBlur }"
              @pointerdown.self="select('project')">
           <div class="scene-backdrop" :style="backgroundStyle"></div>
           <video v-if="videoSource" ref="videoEl" class="scene-video" :src="videoSource" playsinline
@@ -240,12 +240,14 @@
             <button type="button" @click="setWorkspace('book')">Перейти к озвучке</button>
           </div>
 
-          <component v-if="visualScene.visual" :is="VISUAL_CONTENT_COMPONENTS[visualScene.visual.mode]"
-                         :key="`${visualScene.visual.chapterId}-${visualScene.visual.id}`"
-                         :clip="visualScene.visual" :src="assetPreviewUrl(assetById(visualScene.visual.assetId))"
-                         :opacity="visualScene.opacity"
-                         :comic="isComicEdition"
-                         :scene-width="sceneEl?.clientWidth || 960" />
+          <div v-if="visualScene.visual" ref="visualSceneLayer" class="visual-scene-layer">
+            <component :is="VISUAL_CONTENT_COMPONENTS[visualScene.visual.mode]"
+                       :key="`${visualScene.visual.chapterId}-${visualScene.visual.id}`"
+                       :clip="visualScene.visual" :src="assetPreviewUrl(assetById(visualScene.visual.assetId))"
+                       :opacity="1"
+                       :comic="isComicEdition"
+                       :scene-width="sceneEl?.clientWidth || 960" />
+          </div>
 
           <transition name="comic-telegram">
             <a v-if="!isComicEdition || comicTelegramVisible" class="telegram-qr"
@@ -270,8 +272,8 @@
           </button>
 
           <div class="scene-corner scene-corner-bottom">
-            <span>{{ formatTime(currentTime) }}</span>
-            <div><i :style="{ width: `${progressPercent}%` }"></i></div>
+            <span ref="sceneCurrentTimeEl">{{ formatTime(currentTime) }}</span>
+            <div><i ref="sceneProgressFill"></i></div>
             <span>{{ formatTime(duration) }}</span>
           </div>
 
@@ -295,9 +297,9 @@
           </button>
           <button type="button" class="transport-button stop-button" :disabled="!masterKind" @click="stopPlayback" title="Остановить"><span aria-hidden="true"></span></button>
           <button type="button" class="transport-button seek-button" :disabled="!masterKind" @click="seekBy(15)" title="Вперёд на 15 секунд">+15</button>
-          <span class="transport-time current">{{ formatTime(currentTime, true) }}</span>
-          <input class="transport-scrubber" type="range" min="0" :max="Math.max(duration, 0.01)" step="0.01"
-                 :value="currentTime" :disabled="!masterKind" aria-label="Позиция воспроизведения" @input="seekTo(Number($event.target.value))" />
+          <span ref="transportCurrentTimeEl" class="transport-time current">{{ formatTime(currentTime, true) }}</span>
+          <input ref="transportScrubber" class="transport-scrubber" type="range" min="0" :max="Math.max(duration, 0.01)" step="0.01"
+                 :disabled="!masterKind" aria-label="Позиция воспроизведения" @input="seekTo(Number($event.target.value))" />
           <span class="transport-time">{{ formatTime(duration, true) }}</span>
           <label class="volume-control" title="Громкость">
             <span aria-hidden="true">◖</span>
@@ -739,12 +741,15 @@
                   {{ bookPlayerHasExactTimings ? 'точные метки слов' : 'расчётные метки — переозвучьте главу для точных' }}
                 </small>
               </header>
-              <p>
-                <button v-for="word in bookPlayerWords" :key="word.index" type="button"
-                        :class="{ current: currentBookPlayerWord?.index === word.index }"
-                        :title="`${formatTime(word.start, true)} · перейти к слову`"
-                        @click="seekBookPlayer(word.start)">{{ word.text }}</button>
-              </p>
+              <div class="book-word-navigator-copy">
+                <p v-for="paragraph in bookPlayerParagraphs" :key="paragraph[0]?.paragraph"
+                   v-memo="[paragraph, currentBookPlayerWord?.paragraph === paragraph[0]?.paragraph ? currentBookPlayerWord?.index : -1]">
+                  <button v-for="word in paragraph" :key="word.index" type="button"
+                          :class="{ current: currentBookPlayerWord?.index === word.index }"
+                          :title="`${formatTime(word.start, true)} · перейти к слову`"
+                          @click="seekBookPlayer(word.start)">{{ word.text }}</button>
+                </p>
+              </div>
             </div>
           </div>
           <footer class="book-editor-footer">
@@ -1121,9 +1126,8 @@
           <div class="timeline-lane audio-lane" @pointerdown.self="startTimelineScrub">
             <button v-if="audioAsset" type="button" class="audio-clip master-audio-clip"
                     :style="clipStyle(0, duration, 100)" @click.stop="select('asset', audioAsset.id)">
-              <span class="timeline-waveform" aria-hidden="true">
-                <i v-for="(bar, index) in timelineBars" :key="index" v-memo="[bar, index / timelineBars.length <= progressPercent / 100]" :style="{ height: `${bar * 100}%` }"
-                   :class="{ played: index / timelineBars.length <= progressPercent / 100 }"></i>
+              <span ref="timelineWaveform" class="timeline-waveform" aria-hidden="true">
+                <i v-for="(bar, index) in timelineBars" :key="index" v-memo="[bar]" :style="{ height: `${bar * 100}%` }"></i>
               </span>
               <b>{{ audioAsset.name }}</b>
             </button>
@@ -1170,12 +1174,11 @@
           <div v-if="selectedExcerpt" class="timeline-excerpt-range"
                :style="clipStyle(selectedExcerpt.start, selectedExcerpt.end, 0.2)"
                :title="`Выбранный текст · ${formatTime(selectedExcerpt.start)}–${formatTime(selectedExcerpt.end)}`"></div>
-          <div class="timeline-playhead" :class="{ dragging: timelineScrubbing }"
-               :style="{ left: `${progressPercent}%` }" role="slider" tabindex="0"
+          <div ref="timelinePlayhead" class="timeline-playhead" :class="{ dragging: timelineScrubbing }"
+               role="slider" tabindex="0"
                aria-label="Курсор таймлайна" aria-valuemin="0" :aria-valuemax="duration"
-               :aria-valuenow="currentTime" :aria-valuetext="formatTime(currentTime, true)"
                @pointerdown.stop="startTimelineScrub" @keydown="onTimelinePlayheadKeydown">
-            <i></i><span></span><em>{{ formatTime(currentTime, true) }}</em>
+            <i></i><span></span><em ref="timelinePlayheadLabel">{{ formatTime(currentTime, true) }}</em>
           </div>
         </div>
       </div>
@@ -1477,7 +1480,7 @@ import {
   chapterTimelineDuration, chapterTimelineWordTimings, chapterTimelineWords,
   clone, formatTime, formatTimecode, freshProject, materialType, normalizeChapter,
   normalizeProject, parseJsonObject, parseTimecode, readingCaptionChunks,
-  timedTextWords, uid, wordAtTime,
+  timedTextWords, uid, wordAtTime, wordsByParagraph,
 } from './editorModel.js'
 import { chapterColor, followWord } from './editorNavigation.js'
 import { createFrameGate } from './playbackClock.js'
@@ -1588,9 +1591,17 @@ const audioEl = ref(null)
 const musicEl = ref(null)
 const videoEl = ref(null)
 const sceneEl = ref(null)
+const visualSceneLayer = ref(null)
+const sceneCurrentTimeEl = ref(null)
+const sceneProgressFill = ref(null)
+const transportCurrentTimeEl = ref(null)
+const transportScrubber = ref(null)
 const visualizerCanvas = ref(null)
 const timelineScroll = ref(null)
 const timelineContent = ref(null)
+const timelineWaveform = ref(null)
+const timelinePlayhead = ref(null)
+const timelinePlayheadLabel = ref(null)
 const timelineViewport = reactive({ left: 0, width: 0, contentWidth: 0 })
 const textNavigatorScroll = ref(null)
 const titleLayerEl = ref(null)
@@ -1645,7 +1656,9 @@ let renderPoller = null
 let noticeTimer = null
 let comicTelegramTimer = null
 let playbackFrame = null
-const playbackUiGate = createFrameGate({ framesPerSecond: 30 })
+const playbackUiGate = createFrameGate({ framesPerSecond: 10 })
+let renderedWaveformElement = null
+let renderedWaveformBars = -1
 let visualFrame = null
 let titleFitFrame = null
 let titleResizeObserver = null
@@ -1858,6 +1871,7 @@ const bookPlayerWords = computed(() => timedTextWords(
   Math.max(0.1, bookPlayerDuration.value || Number(selectedBookAudio.value?.duration) || 0.1),
   selectedBookAudio.value?.is_stale ? [] : selectedBookAudioMetadata.value.word_timings,
 ))
+const bookPlayerParagraphs = computed(() => wordsByParagraph(bookPlayerWords.value))
 const currentBookPlayerWord = computed(() => wordAtTime(bookPlayerWords.value, bookPlayerTime.value))
 const bookPlayerHasExactTimings = computed(() => (
   Array.isArray(selectedBookAudioMetadata.value.word_timings)
@@ -1940,7 +1954,6 @@ const estimatedPeakRenderBytes = computed(() => {
   const audioBytes = Math.max(0, seconds) * activeRenderPreset.value.audioKbps * 1000 / 8
   return Math.ceil((videoBytes * 3 + audioBytes + 128 * 1024 ** 2) * 1.08)
 })
-const progressPercent = computed(() => duration.value ? Math.min(100, Math.max(0, currentTime.value / duration.value * 100)) : 0)
 const musicEqSummary = computed(() => {
   const values = MUSIC_EQ_BANDS.map((band) => Number(project.music?.[band.key]) || 0)
   return values.every((value) => value === 0) ? 'ровно' : values.map((value) => `${value > 0 ? '+' : ''}${value}`).join('/')
@@ -2006,14 +2019,7 @@ const navigatorChapter = computed(() => (
 ))
 const navigatorWords = computed(() => chapterTimelineWords(navigatorChapter.value))
 const navigatorHasExactTimings = computed(() => navigatorWords.value.some((word) => word.timing === 'exact'))
-const navigatorParagraphs = computed(() => {
-  const paragraphs = []
-  for (const word of navigatorWords.value) {
-    if (!paragraphs[word.paragraph]) paragraphs[word.paragraph] = []
-    paragraphs[word.paragraph].push(word)
-  }
-  return paragraphs.filter(Boolean)
-})
+const navigatorParagraphs = computed(() => wordsByParagraph(navigatorWords.value))
 const selectedExcerpt = computed(() => {
   const chapter = timelineChapters.value.find((item) => item.id === textSelection.chapterId)
   if (!chapter || textSelection.anchor < 0 || textSelection.focus < 0) return null
@@ -5483,6 +5489,7 @@ function seekBy(offset) {
 function seekTo(value) {
   const next = Math.max(0, Math.min(Number(value) || 0, duration.value || Number(value) || 0))
   currentTime.value = next
+  updatePlaybackDom(next)
   for (const element of [audioEl.value, videoEl.value, musicEl.value]) {
     if (element && Number.isFinite(element.duration)) {
       const target = element === musicEl.value
@@ -5527,6 +5534,78 @@ function onMediaMetadata(kind) {
     ensureSceneBounds()
   }
   applyVolume()
+  nextTick(() => updatePlaybackDom(currentTime.value))
+}
+
+function playbackBoundaryChanged(timeValue, liveVisualScene) {
+  const chapterPosition = findStartedIndex(timelineChapterIndex.value, timeValue)
+  const chapter = timelineChapterIndex.value.items[chapterPosition] || null
+  const scene = findActiveInterval(timelineSceneIndex.value, timeValue)
+  const music = findActiveInterval(musicClipIndex.value, timeValue, clip => clip.enabled !== false)
+  return (
+    chapter?.id !== currentChapter.value?.id
+    || scene?.id !== currentScene.value?.id
+    || music?.id !== activeMusicClip.value?.id
+    || liveVisualScene?.visual?.id !== visualScene.value?.visual?.id
+  )
+}
+
+function updatePlaybackDom(timeValue, liveVisualScene = sceneAt(visualPlan.value, timeValue)) {
+  const time = Math.max(0, Number(timeValue) || 0)
+  const total = Math.max(0.01, Number(duration.value) || 0.01)
+  const fraction = Math.max(0, Math.min(1, time / total))
+  const preciseTime = formatTime(time, true)
+  const compactTime = formatTime(time)
+
+  if (sceneCurrentTimeEl.value && sceneCurrentTimeEl.value.textContent !== compactTime) {
+    sceneCurrentTimeEl.value.textContent = compactTime
+  }
+  if (transportCurrentTimeEl.value && transportCurrentTimeEl.value.textContent !== preciseTime) {
+    transportCurrentTimeEl.value.textContent = preciseTime
+  }
+  if (timelinePlayheadLabel.value && timelinePlayheadLabel.value.textContent !== preciseTime) {
+    timelinePlayheadLabel.value.textContent = preciseTime
+  }
+  if (sceneProgressFill.value) sceneProgressFill.value.style.transform = `scaleX(${fraction})`
+
+  const scrubber = transportScrubber.value
+  if (scrubber && Math.abs(Number(scrubber.value) - time) > 0.005) scrubber.value = String(time)
+
+  const playhead = timelinePlayhead.value
+  if (playhead) {
+    const width = Math.max(1, Number(timelineViewport.contentWidth) || timelineContent.value?.offsetWidth || 1)
+    playhead.style.transform = `translate3d(${fraction * width - 8}px, 0, 0)`
+    if (playhead.getAttribute('aria-valuetext') !== preciseTime) {
+      playhead.setAttribute('aria-valuenow', String(time))
+      playhead.setAttribute('aria-valuetext', preciseTime)
+    }
+  }
+
+  const waveform = timelineWaveform.value
+  if (waveform !== renderedWaveformElement) {
+    renderedWaveformElement = waveform
+    renderedWaveformBars = -1
+  }
+  if (waveform) {
+    const bars = waveform.children
+    const played = Math.max(0, Math.min(bars.length, Math.floor(fraction * bars.length) + 1))
+    if (played !== renderedWaveformBars) {
+      const start = Math.max(0, Math.min(played, renderedWaveformBars < 0 ? 0 : renderedWaveformBars))
+      const end = Math.min(bars.length, Math.max(played, renderedWaveformBars < 0 ? bars.length : renderedWaveformBars))
+      for (let index = start; index < end; index += 1) bars[index].classList.toggle('played', index < played)
+      renderedWaveformBars = played
+    }
+  }
+
+  if (visualSceneLayer.value) visualSceneLayer.value.style.opacity = String(liveVisualScene?.opacity || 0)
+  sceneEl.value?.classList.toggle('visual-opaque', Number(liveVisualScene?.opacity) >= 1)
+}
+
+function commitPlaybackFrame(timeValue, timestamp, { force = false } = {}) {
+  const liveVisualScene = sceneAt(visualPlan.value, timeValue)
+  updatePlaybackDom(timeValue, liveVisualScene)
+  const boundaryChanged = playbackBoundaryChanged(timeValue, liveVisualScene)
+  if (playbackUiGate.shouldCommit(timestamp, { force: force || boundaryChanged })) currentTime.value = timeValue
 }
 
 function onMediaTime(kind) {
@@ -5534,7 +5613,7 @@ function onMediaTime(kind) {
   const master = masterElement()
   if (!master) return
   const timelineTime = timelineTimeAtSource(master.currentTime || 0)
-  if (playbackUiGate.shouldCommit(performance.now())) currentTime.value = timelineTime
+  commitPlaybackFrame(timelineTime, performance.now())
   applyMasterPlaybackRate(timelineTime)
   if (stopAtExcerptEnd(timelineTime)) return
   const secondary = secondaryElement()
@@ -5577,7 +5656,7 @@ function tickPlayback(frameTime) {
   const master = masterElement()
   if (master) {
     const timelineTime = timelineTimeAtSource(master.currentTime || 0)
-    if (playbackUiGate.shouldCommit(frameTime)) currentTime.value = timelineTime
+    commitPlaybackFrame(timelineTime, frameTime)
     applyMasterPlaybackRate(timelineTime)
     if (stopAtExcerptEnd(timelineTime)) return
   }
@@ -6580,7 +6659,16 @@ function scheduleVisualPlan() {
 
 watch(visualPlanSignature, scheduleVisualPlan, { immediate: true })
 
-watch([timelineZoom, duration, activeWorkspace], () => nextTick(updateTimelineViewport), { flush: 'post' })
+watch(visualPlan, () => nextTick(() => updatePlaybackDom(currentTime.value)), { flush: 'post' })
+
+watch(() => visualScene.value.visual?.id, () => {
+  nextTick(() => updatePlaybackDom(currentTime.value))
+}, { flush: 'post' })
+
+watch([timelineZoom, duration, activeWorkspace], () => nextTick(() => {
+  updateTimelineViewport()
+  updatePlaybackDom(currentTime.value)
+}), { flush: 'post' })
 
 watch(() => audioSource.value, () => {
   pauseAll()
@@ -6672,7 +6760,10 @@ onMounted(() => {
   scheduleTitleFit()
   drawVisualizer()
   loadInitialProject()
-  nextTick(updateTimelineViewport)
+  nextTick(() => {
+    updateTimelineViewport()
+    updatePlaybackDom(currentTime.value)
+  })
 })
 
 onBeforeUnmount(() => {

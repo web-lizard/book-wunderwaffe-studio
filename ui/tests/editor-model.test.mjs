@@ -15,7 +15,18 @@ import {
   parseTimecode,
   timedTextWords,
   wordAtTime,
+  wordsByParagraph,
 } from '../src/editorModel.js'
+
+test('word navigation keeps paragraph groups compact and ordered', () => {
+  const words = [
+    { index: 0, paragraph: 0, text: 'one' },
+    { index: 1, paragraph: 0, text: 'two' },
+    { index: 2, paragraph: 3, text: 'three' },
+  ]
+  assert.deepEqual(wordsByParagraph(words), [[words[0], words[1]], [words[2]]])
+  assert.deepEqual(wordsByParagraph(null), [])
+})
 
 test('fresh projects do not share nested mutable defaults', () => {
   const first = freshProject()

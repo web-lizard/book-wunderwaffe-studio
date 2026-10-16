@@ -1,4 +1,5 @@
-.chapter-visual-content { position: absolute; inset: 0; z-index: 25; overflow: hidden; pointer-events: none; background: #0c0c12; }
+.visual-scene-layer { position: absolute; inset: 0; z-index: 25; opacity: 0; pointer-events: none; will-change: opacity; }
+.chapter-visual-content { position: absolute; inset: 0; z-index: 1; overflow: hidden; pointer-events: none; background: #0c0c12; }
 .chapter-visual-backdrop { position: absolute; inset: -4%; background-size: cover; background-position: center; }
 .chapter-visual-image { position: absolute; object-fit: contain; }
 .chapter-visual-badge { position: absolute; display: flex; align-items: center; padding: 0 1.2%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; width: fit-content !important; max-width: 76%; border-radius: 5px; background: rgba(0,0,0,.58); color: #f4f0e8; font-size: clamp(9px, 1.25cqw, 24px); }

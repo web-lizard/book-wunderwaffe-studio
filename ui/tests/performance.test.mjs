@@ -7,6 +7,7 @@ const scenePlan = readFileSync(new URL('../src/scenePlan.js', import.meta.url), 
 const asyncControl = readFileSync(new URL('../src/asyncControl.js', import.meta.url), 'utf8')
 const timelineModel = readFileSync(new URL('../src/timelineModel.js', import.meta.url), 'utf8')
 const playbackClock = readFileSync(new URL('../src/playbackClock.js', import.meta.url), 'utf8')
+const style = readFileSync(new URL('../src/style.css', import.meta.url), 'utf8')
 
 test('large visual projects use thumbnails and render only the active full-size frame', () => {
   assert.match(app, /project-thumbnail/)
@@ -32,9 +33,15 @@ test('timeline work is viewport-limited and scene lookup is logarithmic', () => 
 })
 
 test('playback bounds high-frequency root updates and memoizes large rows', () => {
-  assert.match(app, /createFrameGate\(\{ framesPerSecond: 30 \}\)/)
+  assert.match(app, /createFrameGate\(\{ framesPerSecond: 10 \}\)/)
   assert.match(app, /playbackUiGate\.shouldCommit/)
+  assert.match(app, /function updatePlaybackDom/)
+  assert.match(app, /translate3d\(/)
+  assert.match(app, /visualSceneLayer\.value\.style\.opacity/)
   assert.match(app, /v-memo=/)
+  assert.match(app, /wordsByParagraph/)
+  assert.match(style, /content-visibility:\s*auto/)
+  assert.match(style, /contain-intrinsic-size:/)
   assert.match(playbackClock, /DEFAULT_PLAYBACK_UI_FPS = 30/)
 })
 
