@@ -119,6 +119,7 @@
 
         <div v-if="project.materials.length" class="material-list">
           <button v-for="asset in project.materials" :key="asset.id" type="button"
+                  v-memo="[asset.name, asset.type, asset.role, asset.status, asset.progress, selection.type === 'asset' && selection.id === asset.id]"
                   class="material-row"
                   :draggable="asset.type === 'audio'"
                   :class="{ active: selection.type === 'asset' && selection.id === asset.id }"
@@ -1066,7 +1067,8 @@
           </div>
 
           <div class="timeline-lane chapter-lane" @pointerdown.self="startTimelineScrub">
-            <button v-for="chapter in timelineChapters" :key="chapter.id" type="button" class="chapter-clip"
+            <button v-for="chapter in visibleTimelineChapters" :key="chapter.id" type="button" class="chapter-clip"
+                    v-memo="[chapter.title, chapter.start_seconds, chapter.end_seconds, chapterPlaybackRate(chapter), currentChapter?.id === chapter.id, selection.type === 'chapter' && selection.id === chapter.id]"
                     :class="{ active: currentChapter?.id === chapter.id, selected: selection.type === 'chapter' && selection.id === chapter.id }"
                     :style="{ ...clipStyle(chapter.start_seconds, chapter.end_seconds, 0.35), ...chapterAccent(chapter) }"
                     @click.stop="selectChapter(chapter)">
@@ -1080,7 +1082,8 @@
           </div>
 
           <div class="timeline-lane scene-lane" @pointerdown.self="startTimelineScrub">
-            <button v-for="scene in project.scenes" :key="scene.id" type="button" class="scene-clip"
+            <button v-for="scene in visibleTimelineScenes" :key="scene.id" type="button" class="scene-clip"
+                    v-memo="[scene.name, scene.start, scene.end, currentScene?.id === scene.id, selection.type === 'scene' && selection.id === scene.id]"
                     :class="{ active: currentScene?.id === scene.id, selected: selection.type === 'scene' && selection.id === scene.id }"
                     :style="clipStyle(scene.start, scene.end, 0.8)"
                     @pointerdown.stop="startSceneClipPointer($event, scene, 'move')"
@@ -1093,6 +1096,7 @@
 
           <div class="timeline-lane visual-inserts-lane" @pointerdown.self="startTimelineScrub">
             <button v-for="clip in visibleTimelineVisualClips" :key="clip.id" type="button" class="visual-insert-clip"
+                    v-memo="[clip.assetId, clip.start, clip.end, selection.type === 'visual' && selection.id === clip.id, visualScene.visual?.id === clip.id]"
                     :class="{ selected: selection.type === 'visual' && selection.id === clip.id, active: visualScene.visual?.id === clip.id }"
                     :style="clipStyle(clip.start, clip.end, 0.15)"
                     :title="`${assetById(clip.assetId)?.name || 'Иллюстрация'} · ${clip.chapterTitle}`"
@@ -1118,12 +1122,13 @@
             <button v-if="audioAsset" type="button" class="audio-clip master-audio-clip"
                     :style="clipStyle(0, duration, 100)" @click.stop="select('asset', audioAsset.id)">
               <span class="timeline-waveform" aria-hidden="true">
-                <i v-for="(bar, index) in timelineBars" :key="index" :style="{ height: `${bar * 100}%` }"
+                <i v-for="(bar, index) in timelineBars" :key="index" v-memo="[bar, index / timelineBars.length <= progressPercent / 100]" :style="{ height: `${bar * 100}%` }"
                    :class="{ played: index / timelineBars.length <= progressPercent / 100 }"></i>
               </span>
               <b>{{ audioAsset.name }}</b>
             </button>
-            <button v-for="chapter in videoAudioChapters" :key="`audio-${chapter.id}`"
+            <button v-for="chapter in visibleVideoAudioChapters" :key="`audio-${chapter.id}`"
+                    v-memo="[chapter.title, chapter.start_seconds, chapter.end_seconds, currentChapter?.id === chapter.id]"
                     type="button" class="chapter-audio-clip"
                     :class="{ active: currentChapter?.id === chapter.id }"
                     :style="clipStyle(chapter.start_seconds, chapter.end_seconds, 0.35)"
@@ -1135,7 +1140,8 @@
 
           <div class="timeline-lane music-lane" @pointerdown.self="startTimelineScrub"
                @dragover.prevent="onMusicLaneDragOver" @drop.prevent="dropMusicOnTimeline">
-            <button v-for="clip in displayMusicClips" :key="clip.id" type="button" class="music-clip"
+            <button v-for="clip in visibleMusicClips" :key="clip.id" type="button" class="music-clip"
+                    v-memo="[clip.assetId, clip.start, clip.end, clip.enabled, project.music.enabled, selectedMusicClip?.id === clip.id]"
                     :class="{ muted: !project.music.enabled || clip.enabled === false, selected: selectedMusicClip?.id === clip.id }"
                     :style="clipStyle(clip.start, clip.end, 0.35)"
                     :title="`${assetById(clip.assetId)?.name || 'Музыка'} · перетаскивание: сдвиг, края: подрезка, Alt+клик: разрез`"
@@ -1152,7 +1158,8 @@
             <p v-if="!displayMusicClips.length" class="music-lane-empty">Перетащите аудиофайл из материалов на нужную главу</p>
           </div>
 
-          <i v-for="chapter in timelineChapters" :key="`grid-${chapter.id}`"
+          <i v-for="chapter in visibleTimelineChapters" :key="`grid-${chapter.id}`"
+             v-memo="[chapter.title, chapter.start_seconds, duration]"
              class="timeline-chapter-grid-line" :style="{ left: `${chapter.start_seconds / Math.max(duration, 1) * 100}%` }"
              :title="chapter.title"></i>
           <div v-if="snapGuideTime !== null" class="timeline-snap-guide"
@@ -1459,7 +1466,7 @@
 </template>
 
 <script setup>
-import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, shallowRef, watch } from 'vue'
 import { createApiClient } from './apiClient.js'
 import { createLatestSaveCoordinator, createPointerGestureController, createSerialPoller } from './asyncControl.js'
 import {
@@ -1473,8 +1480,13 @@ import {
   timedTextWords, uid, wordAtTime,
 } from './editorModel.js'
 import { chapterColor, followWord } from './editorNavigation.js'
+import { createFrameGate } from './playbackClock.js'
 import { createProjectSnapshotWriter } from './projectPersistence.js'
 import { sceneAt } from './scenePlan.js'
+import {
+  buildTimelineChapters, buildTimelineVisualClips, createIntervalIndex,
+  findActiveInterval, findStartedIndex, timelineViewportRange, visibleIntervals,
+} from './timelineModel.js'
 import ChapterVisual from './ChapterVisual.vue'
 import TimecodeField from './TimecodeField.vue'
 import QrcodeVue from 'qrcode.vue'
@@ -1487,7 +1499,7 @@ const TELEGRAM_URL = 'https://t.me/temple_of_lizard'
 const renderPresetOptions = Object.values(RENDER_PRESETS)
 
 const project = reactive(freshProject())
-const visualPlan = ref({ clips: [], issues: [] })
+const visualPlan = shallowRef({ clips: [], issues: [] })
 const visualPickerChapterId = ref(null)
 const visualPickerAssets = ref([])
 const visualPlacementBusy = ref(false)
@@ -1597,7 +1609,7 @@ const musicEqState = reactive({
   error: false,
   message: 'Запустите пробу музыки — EQ включится в реальном времени',
 })
-const waveformSamples = ref([])
+const waveformSamples = shallowRef([])
 const timelineZoom = ref(1)
 const chapterTimelineMode = ref(false)
 const timelineScrubbing = ref(false)
@@ -1633,6 +1645,7 @@ let renderPoller = null
 let noticeTimer = null
 let comicTelegramTimer = null
 let playbackFrame = null
+const playbackUiGate = createFrameGate({ framesPerSecond: 30 })
 let visualFrame = null
 let titleFitFrame = null
 let titleResizeObserver = null
@@ -1946,38 +1959,33 @@ const displayMusicClips = computed(() => {
     legacy: true,
   }]
 })
+const musicClipIndex = computed(() => createIntervalIndex(displayMusicClips.value))
 const selectedMusicClip = computed(() => (
   selection.type === 'music' && selection.id
     ? displayMusicClips.value.find((clip) => clip.id === selection.id) || null
     : null
 ))
-const activeMusicClip = computed(() => {
-  const now = currentTime.value
-  const clips = displayMusicClips.value
-  for (let index = clips.length - 1; index >= 0; index -= 1) {
-    const clip = clips[index]
-    if (clip.enabled !== false && now >= Number(clip.start) && now < Number(clip.end)) return clip
-  }
-  return null
-})
+const activeMusicClip = computed(() => findActiveInterval(
+  musicClipIndex.value,
+  currentTime.value,
+  clip => clip.enabled !== false,
+))
 const musicPlaybackClip = computed(() => (
   playing.value
     ? activeMusicClip.value
     : activeMusicClip.value || selectedMusicClip.value || displayMusicClips.value[0] || null
 ))
 
-const timelineChapters = computed(() => {
-  const sorted = [...project.chapters].sort((a, b) => a.start_seconds - b.start_seconds)
-  return sorted.map((chapter, index) => {
-    const nextStart = sorted[index + 1]?.start_seconds
-    const end = (nextStart ?? Number(chapter.end_seconds)) || duration.value || chapter.start_seconds + 60
-    return {
-      ...chapter,
-      index,
-      end_seconds: Math.max(chapter.start_seconds + 0.1, end),
-    }
-  })
-})
+const timelineChapters = computed(() => buildTimelineChapters(project.chapters, duration.value))
+const timelineChapterIndex = computed(() => createIntervalIndex(timelineChapters.value, {
+  start: 'start_seconds',
+  end: 'end_seconds',
+}))
+const sourceChapterIndex = computed(() => createIntervalIndex(timelineChapters.value, {
+  start: chapterSourceStart,
+  end: chapterSourceEnd,
+}))
+const timelineSceneIndex = computed(() => createIntervalIndex(project.scenes))
 
 const filteredNavigatorChapters = computed(() => {
   const query = textNavigatorSearch.value.toLocaleLowerCase('ru-RU')
@@ -2045,22 +2053,8 @@ const currentNavigatorWord = computed(() => {
 })
 
 const currentChapterIndex = computed(() => {
-  const chapters = timelineChapters.value
-  if (!chapters.length) return -1
   const time = Number.isFinite(Number(currentTime.value)) ? Math.max(0, Number(currentTime.value)) : 0
-  let low = 0
-  let high = chapters.length - 1
-  let result = 0
-  while (low <= high) {
-    const middle = Math.floor((low + high) / 2)
-    if (chapters[middle].start_seconds <= time) {
-      result = middle
-      low = middle + 1
-    } else {
-      high = middle - 1
-    }
-  }
-  return result
+  return findStartedIndex(timelineChapterIndex.value, time)
 })
 const currentChapter = computed(() => currentChapterIndex.value >= 0 ? timelineChapters.value[currentChapterIndex.value] : null)
 const isComicEdition = computed(() => project.presentationMode === 'comic')
@@ -2071,11 +2065,7 @@ const showComicChapterTitle = computed(() => {
 const previousChapter = computed(() => currentChapterIndex.value > 0 ? timelineChapters.value[currentChapterIndex.value - 1] : null)
 const nextChapter = computed(() => currentChapterIndex.value >= 0 ? timelineChapters.value[currentChapterIndex.value + 1] || null : null)
 
-const currentScene = computed(() => {
-  const sorted = [...project.scenes].sort((a, b) => a.start - b.start)
-  return [...sorted].reverse().find((scene) => currentTime.value >= scene.start && currentTime.value < scene.end)
-    || null
-})
+const currentScene = computed(() => findActiveInterval(timelineSceneIndex.value, currentTime.value))
 
 const currentChapterImageAsset = computed(() => assetById(currentChapter.value?.imageAssetId))
 const sceneBackgroundAsset = computed(() => {
@@ -2130,25 +2120,29 @@ const selectedVisualIssue = computed(() => {
     : reason ? 'Вставка не видна: проверьте границы главы и пересечения с другими вставками.' : ''
 })
 const visualScene = computed(() => sceneAt(visualPlan.value, currentTime.value))
-const timelineVisualClips = computed(() => timelineChapters.value.flatMap(chapter => (
-  (chapter.visualInserts || []).map(insert => ({ ...insert, chapterId: chapter.id, chapterTitle: chapter.title,
-    start: chapter.start_seconds + insert.startTime,
-    end: Math.min(chapter.end_seconds, chapter.start_seconds + insert.startTime + insert.duration),
-  })).filter(clip => clip.end > clip.start)
-)))
-const visibleTimelineRange = computed(() => {
-  const total = Math.max(0.1, duration.value)
-  const contentWidth = Math.max(1, timelineViewport.contentWidth || timelineViewport.width)
-  const viewportWidth = Math.max(1, timelineViewport.width)
-  const overscan = viewportWidth * 0.75
-  const left = Math.max(0, timelineViewport.left - overscan)
-  const right = Math.min(contentWidth, timelineViewport.left + viewportWidth + overscan)
-  return { start: left / contentWidth * total, end: right / contentWidth * total }
-})
+const timelineVisualClips = computed(() => buildTimelineVisualClips(timelineChapters.value))
+const timelineVisualIndex = computed(() => createIntervalIndex(timelineVisualClips.value))
+const videoAudioChapterIndex = computed(() => createIntervalIndex(videoAudioChapters.value, {
+  start: 'start_seconds',
+  end: 'end_seconds',
+}))
+const visibleTimelineRange = computed(() => timelineViewportRange(timelineViewport, duration.value))
+const visibleTimelineChapters = computed(() => visibleIntervals(
+  timelineChapterIndex.value, visibleTimelineRange.value.start, visibleTimelineRange.value.end,
+))
+const visibleTimelineScenes = computed(() => visibleIntervals(
+  timelineSceneIndex.value, visibleTimelineRange.value.start, visibleTimelineRange.value.end,
+))
 const visibleTimelineVisualClips = computed(() => {
   const range = visibleTimelineRange.value
-  return timelineVisualClips.value.filter(clip => clip.end >= range.start && clip.start <= range.end)
+  return visibleIntervals(timelineVisualIndex.value, range.start, range.end)
 })
+const visibleVideoAudioChapters = computed(() => visibleIntervals(
+  videoAudioChapterIndex.value, visibleTimelineRange.value.start, visibleTimelineRange.value.end,
+))
+const visibleMusicClips = computed(() => visibleIntervals(
+  musicClipIndex.value, visibleTimelineRange.value.start, visibleTimelineRange.value.end,
+))
 const visualPlanInput = computed(() => ({
   duration_seconds: duration.value,
   chapters: timelineChapters.value.map(chapter => ({ id: chapter.id, title: chapter.title,
@@ -2449,9 +2443,7 @@ function ensureExplicitMusicClips() {
 }
 
 function chapterAtTime(time) {
-  return timelineChapters.value.find((chapter) => (
-    time >= Number(chapter.start_seconds) && time < Number(chapter.end_seconds)
-  )) || null
+  return findActiveInterval(timelineChapterIndex.value, time)
 }
 
 function bindMusicClipToMatchingChapter(clip) {
@@ -4999,11 +4991,11 @@ async function playSelectedExcerpt() {
   await togglePlay()
 }
 
-function stopAtExcerptEnd() {
+function stopAtExcerptEnd(timeValue = currentTime.value) {
   const selectedEnd = excerptPlaybackEnd.value
   if (selectedEnd === null) return false
   const end = Number(selectedEnd)
-  if (!Number.isFinite(end) || currentTime.value < end - 0.015) return false
+  if (!Number.isFinite(end) || Number(timeValue) < end - 0.015) return false
   pauseAll()
   seekTo(end)
   return true
@@ -5381,18 +5373,12 @@ function secondaryTimeAt(absoluteTime) {
 
 function chapterAtTimelineTime(timeValue) {
   const time = Math.max(0, Number(timeValue) || 0)
-  return timelineChapters.value.find((chapter, index, chapters) => (
-    time >= Number(chapter.start_seconds)
-    && (time < Number(chapter.end_seconds) || index === chapters.length - 1)
-  )) || timelineChapters.value.at(-1) || null
+  return findActiveInterval(timelineChapterIndex.value, time) || timelineChapters.value.at(-1) || null
 }
 
 function chapterAtSourceTime(timeValue) {
   const time = Math.max(0, Number(timeValue) || 0)
-  return timelineChapters.value.find((chapter, index, chapters) => (
-    time >= chapterSourceStart(chapter)
-    && (time < chapterSourceEnd(chapter) || index === chapters.length - 1)
-  )) || timelineChapters.value.at(-1) || null
+  return findActiveInterval(sourceChapterIndex.value, time) || timelineChapters.value.at(-1) || null
 }
 
 function sourceTimeAtTimeline(timeValue) {
@@ -5482,6 +5468,7 @@ function pauseAll() {
   playing.value = false
   excerptPlaybackEnd.value = null
   cancelAnimationFrame(playbackFrame)
+  playbackUiGate.reset()
 }
 
 function stopPlayback() {
@@ -5546,11 +5533,12 @@ function onMediaTime(kind) {
   if (kind !== masterKind.value) return
   const master = masterElement()
   if (!master) return
-  currentTime.value = timelineTimeAtSource(master.currentTime || 0)
-  applyMasterPlaybackRate(currentTime.value)
-  if (stopAtExcerptEnd()) return
+  const timelineTime = timelineTimeAtSource(master.currentTime || 0)
+  if (playbackUiGate.shouldCommit(performance.now())) currentTime.value = timelineTime
+  applyMasterPlaybackRate(timelineTime)
+  if (stopAtExcerptEnd(timelineTime)) return
   const secondary = secondaryElement()
-  const secondaryTarget = secondaryTimeAt(currentTime.value)
+  const secondaryTarget = secondaryTimeAt(timelineTime)
   if (secondary && Math.abs(secondary.currentTime - secondaryTarget) > 0.22) secondary.currentTime = secondaryTarget
   syncMusicPlayback()
 }
@@ -5560,7 +5548,8 @@ function onMediaPlay(kind) {
   playing.value = true
   void connectLiveVisualizer()
   cancelAnimationFrame(playbackFrame)
-  tickPlayback()
+  playbackUiGate.reset()
+  tickPlayback(performance.now())
 }
 
 function onMediaPause(kind) {
@@ -5583,14 +5572,15 @@ function onMediaError(kind) {
   if (source) setNotice(`${kind === 'audio' ? 'Аудио' : 'Видео'} не поддерживается браузером или файл недоступен.`, 'error', 7000)
 }
 
-function tickPlayback() {
+function tickPlayback(frameTime) {
   if (!playing.value) return
   const master = masterElement()
   if (master) {
-    currentTime.value = timelineTimeAtSource(master.currentTime || 0)
-    applyMasterPlaybackRate(currentTime.value)
+    const timelineTime = timelineTimeAtSource(master.currentTime || 0)
+    if (playbackUiGate.shouldCommit(frameTime)) currentTime.value = timelineTime
+    applyMasterPlaybackRate(timelineTime)
+    if (stopAtExcerptEnd(timelineTime)) return
   }
-  if (stopAtExcerptEnd()) return
   playbackFrame = requestAnimationFrame(tickPlayback)
 }
 

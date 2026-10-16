@@ -5,6 +5,8 @@ import test from 'node:test'
 const app = readFileSync(new URL('../src/App.vue', import.meta.url), 'utf8')
 const scenePlan = readFileSync(new URL('../src/scenePlan.js', import.meta.url), 'utf8')
 const asyncControl = readFileSync(new URL('../src/asyncControl.js', import.meta.url), 'utf8')
+const timelineModel = readFileSync(new URL('../src/timelineModel.js', import.meta.url), 'utf8')
+const playbackClock = readFileSync(new URL('../src/playbackClock.js', import.meta.url), 'utf8')
 
 test('large visual projects use thumbnails and render only the active full-size frame', () => {
   assert.match(app, /project-thumbnail/)
@@ -17,10 +19,23 @@ test('large visual projects use thumbnails and render only the active full-size 
 
 test('timeline work is viewport-limited and scene lookup is logarithmic', () => {
   assert.match(app, /visibleTimelineVisualClips/)
+  assert.match(app, /visibleTimelineChapters/)
+  assert.match(app, /visibleTimelineScenes/)
+  assert.match(app, /visibleMusicClips/)
   assert.match(app, /updateTimelineViewport/)
   assert.match(app, /showTimelineClipThumbnail/)
   assert.match(scenePlan, /while \(low <= high\)/)
+  assert.match(timelineModel, /export function createIntervalIndex/)
+  assert.match(timelineModel, /prefixMaxEnds/)
+  assert.match(timelineModel, /export function visibleIntervals/)
   assert.doesNotMatch(scenePlan, /clips\?\.find/)
+})
+
+test('playback bounds high-frequency root updates and memoizes large rows', () => {
+  assert.match(app, /createFrameGate\(\{ framesPerSecond: 30 \}\)/)
+  assert.match(app, /playbackUiGate\.shouldCommit/)
+  assert.match(app, /v-memo=/)
+  assert.match(playbackClock, /DEFAULT_PLAYBACK_UI_FPS = 30/)
 })
 
 test('opening an existing edition does not immediately rewrite its full payload', () => {

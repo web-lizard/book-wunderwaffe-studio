@@ -71,7 +71,7 @@ test('opening video rebuilds narrated chapters and exposes chapter audio clips',
   assert.match(source, /await openBookInVideo\(\)/)
   assert.match(source, /await rebuildBookVideo\(activeProjectRecord\.value/)
   assert.match(source, /audioAssetId: audioMaterials\.get\(chapter\.id\)/)
-  assert.match(source, /v-for="chapter in videoAudioChapters"/)
+  assert.match(source, /v-for="chapter in visibleVideoAudioChapters"/)
   assert.match(source, /filter\(\(chapter\) => timings\.has\(chapter\.id\)\)/)
   assert.match(source, /ensureDefaultVideoCover/)
   assert.match(source, />Текст на экране</)
@@ -199,7 +199,7 @@ test('book and video word navigation prefer exact TTS boundaries', () => {
 })
 
 test('ordinary book playback is not mistaken for a finished text excerpt', () => {
-  const start = source.indexOf('function stopAtExcerptEnd()')
+  const start = source.indexOf('function stopAtExcerptEnd')
   const end = source.indexOf('function scrollTimelineToTime', start)
   const guard = source.slice(start, end)
   assert.match(guard, /selectedEnd === null/)
