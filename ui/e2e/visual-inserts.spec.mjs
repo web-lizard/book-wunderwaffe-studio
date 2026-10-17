@@ -46,7 +46,10 @@ async function openFixture(page, options = {}) {
     ],
     chapters: [
       { id: 'one', title: 'Глава первая', start_seconds: 0, end_seconds: 40, imageAssetId: 'art', text: 'Текст звучащей книги. Слушатель видит слова и иллюстрации.',
-        visualInserts: options.presentationMode === 'comic' ? [{ id: 'comic-opening', assetId: 'comic', type: 'image', startTime: 0, duration: 40, transition: 'crossfade', transitionDuration: .75 }] : [] },
+        visualInserts: options.crossfadePair ? [
+          { id: 'comic-old', assetId: 'art', type: 'image', startTime: 0, duration: 20, transition: 'crossfade', transitionDuration: .75 },
+          { id: 'comic-new', assetId: 'comic', type: 'image', startTime: 20, duration: 20, transition: 'crossfade', transitionDuration: .75 },
+        ] : options.presentationMode === 'comic' ? [{ id: 'comic-opening', assetId: 'comic', type: 'image', startTime: 0, duration: 40, transition: 'crossfade', transitionDuration: .75 }] : [] },
       { id: 'two', title: 'Короткая глава', start_seconds: 40, end_seconds: 60, text: 'Снова обычная композиция.' },
     ], scenes: [{ id: 'scene', name: 'Оформление', start: 0, end: 60 }],
   }
@@ -97,6 +100,19 @@ test('comic edition uses full-bleed art, literary subtitles and the compact thea
   await expect(page.locator('.comic-controls')).toHaveCount(0)
   await page.keyboard.press('Escape')
   await expect(page.locator('.studio')).not.toHaveClass(/comic-theater/)
+  expect(fixture.errors).toEqual([])
+})
+
+test('adjacent comic slides crossfade directly over each other', async ({ page }) => {
+  const fixture = await openFixture(page, { presentationMode: 'comic', crossfadePair: true })
+  await seek(page, 20.375)
+  const layers = page.locator('.chapter-visual-content.comic')
+  await expect(layers).toHaveCount(2)
+  const opacities = await layers.evaluateAll(elements => elements.map(element => Number(getComputedStyle(element).opacity)))
+  expect(opacities[0]).toBeCloseTo(1, 2)
+  expect(opacities[1]).toBeGreaterThan(.4)
+  expect(opacities[1]).toBeLessThan(.6)
+  await expect(page.locator('.visual-scene-layer')).toHaveCSS('opacity', '1')
   expect(fixture.errors).toEqual([])
 })
 

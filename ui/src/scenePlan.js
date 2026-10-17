@@ -1,5 +1,6 @@
 // The Python scene compiler owns timing, chapter clipping, overlap resolution,
-// transitions and layout. Preview only interpolates the returned keyframes.
+// transitions and layout. Preview interpolates its keyframes and renders the
+// active pair during a slide-to-slide crossfade.
 export function opacityAt(clip, time) {
   if (time < clip.start || time >= clip.end) return 0
   const frames = clip.opacity
@@ -14,15 +15,29 @@ export function sceneAt(plan, time) {
   const clips = plan?.clips || []
   let low = 0
   let high = clips.length - 1
-  let visual = null
+  let latest = -1
   while (low <= high) {
     const middle = (low + high) >> 1
     const clip = clips[middle]
     if (time < clip.start) high = middle - 1
-    else if (time >= clip.end) low = middle + 1
-    else { visual = clip; break }
+    else { latest = middle; low = middle + 1 }
   }
-  return { mode: visual?.mode || 'normal', visual, opacity: visual ? opacityAt(visual, time) : 0 }
+  const layers = []
+  // The compiler only overlaps adjacent clips, so the current and immediately
+  // preceding start are sufficient while keeping playback lookup logarithmic.
+  for (let index = Math.max(0, latest - 1); index <= latest; index += 1) {
+    const visual = clips[index]
+    if (visual && visual.start <= time && time < visual.end) {
+      layers.push({ visual, opacity: opacityAt(visual, time) })
+    }
+  }
+  const visual = layers.at(-1)?.visual || null
+  return {
+    mode: visual?.mode || 'normal',
+    visual,
+    layers,
+    opacity: layers.reduce((maximum, layer) => Math.max(maximum, layer.opacity), 0),
+  }
 }
 
 export function percentRect(rect) {

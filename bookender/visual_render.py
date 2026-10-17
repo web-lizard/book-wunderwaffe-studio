@@ -92,11 +92,18 @@ def visual_filter_chain(clips: list[dict], *, start: float, duration: float,
         label = f"visual_content_{index}"
         filters = ["format=rgba", f"setpts=PTS+{start:.9f}/TB"]
         frames = clip["opacity"]
-        if len(frames) == 4:
-            filters.extend([
-                f"fade=t=in:st={frames[0][0]:.9f}:d={frames[1][0] - frames[0][0]:.9f}:alpha=1",
-                f"fade=t=out:st={frames[2][0]:.9f}:d={frames[3][0] - frames[2][0]:.9f}:alpha=1",
-            ])
+        for left, right in zip(frames, frames[1:]):
+            fade_duration = right[0] - left[0]
+            if fade_duration <= 0:
+                continue
+            if left[1] == 0 and right[1] == 1:
+                filters.append(
+                    f"fade=t=in:st={left[0]:.9f}:d={fade_duration:.9f}:alpha=1"
+                )
+            elif left[1] == 1 and right[1] == 0:
+                filters.append(
+                    f"fade=t=out:st={left[0]:.9f}:d={fade_duration:.9f}:alpha=1"
+                )
         filters.append(f"setpts=PTS-{start:.9f}/TB")
         parts.append(f"[{input_offset + index}:v]{','.join(filters)}[{label}]")
         next_label = f"visual_composite_{index}"

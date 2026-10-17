@@ -240,11 +240,13 @@
             <button type="button" @click="setWorkspace('book')">Перейти к озвучке</button>
           </div>
 
-          <div v-if="visualScene.visual" ref="visualSceneLayer" class="visual-scene-layer">
-            <component :is="VISUAL_CONTENT_COMPONENTS[visualScene.visual.mode]"
-                       :key="`${visualScene.visual.chapterId}-${visualScene.visual.id}`"
-                       :clip="visualScene.visual" :src="assetPreviewUrl(assetById(visualScene.visual.assetId))"
-                       :opacity="1"
+          <div v-if="visualScene.layers?.length" ref="visualSceneLayer" class="visual-scene-layer">
+            <component v-for="layer in visualScene.layers"
+                       :is="VISUAL_CONTENT_COMPONENTS[layer.visual.mode]"
+                       :key="`${layer.visual.chapterId}-${layer.visual.id}`"
+                       :data-visual-key="`${layer.visual.chapterId}:${layer.visual.id}`"
+                       :clip="layer.visual" :src="assetPreviewUrl(assetById(layer.visual.assetId))"
+                       :opacity="layer.opacity"
                        :comic="isComicEdition"
                        :scene-width="sceneEl?.clientWidth || 960" />
           </div>
@@ -5661,7 +5663,17 @@ function updatePlaybackDom(timeValue, liveVisualScene = sceneAt(visualPlan.value
     }
   }
 
-  if (visualSceneLayer.value) visualSceneLayer.value.style.opacity = String(liveVisualScene?.opacity || 0)
+  if (visualSceneLayer.value) {
+    const liveLayers = liveVisualScene?.layers || []
+    const opacityByKey = new Map(liveLayers.map(layer => [
+      `${layer.visual.chapterId}:${layer.visual.id}`,
+      layer.opacity,
+    ]))
+    visualSceneLayer.value.style.opacity = liveLayers.length ? '1' : '0'
+    for (const element of visualSceneLayer.value.children) {
+      element.style.opacity = String(opacityByKey.get(element.dataset.visualKey) ?? 0)
+    }
+  }
   sceneEl.value?.classList.toggle('visual-opaque', Number(liveVisualScene?.opacity) >= 1)
 }
 

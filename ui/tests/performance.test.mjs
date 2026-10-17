@@ -9,12 +9,13 @@ const timelineModel = readFileSync(new URL('../src/timelineModel.js', import.met
 const playbackClock = readFileSync(new URL('../src/playbackClock.js', import.meta.url), 'utf8')
 const style = readFileSync(new URL('../src/style.css', import.meta.url), 'utf8')
 
-test('large visual projects use thumbnails and render only the active full-size frame', () => {
+test('large visual projects use thumbnails and render only the active transition pair', () => {
   assert.match(app, /project-thumbnail/)
   assert.match(app, /assetThumbnailUrl/)
   assert.match(app, /assetPreviewUrl/)
   assert.match(app, /loading="lazy"/)
-  assert.match(app, /v-if="visualScene\.visual"/)
+  assert.match(app, /v-if="visualScene\.layers\?\.length"/)
+  assert.match(app, /v-for="layer in visualScene\.layers"/)
   assert.doesNotMatch(app, /v-for="clip in previewVisualClips"/)
 })
 

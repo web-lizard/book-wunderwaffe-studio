@@ -68,11 +68,13 @@ def chapter_bounds(project: dict) -> list[tuple[dict, float, float]]:
 
 
 def compile_scene_plan(project: dict) -> dict:
-    """Resolve overlaps deterministically: the earlier clip owns its interval.
+    """Resolve source overlaps and compile seamless slide-to-slide transitions.
 
     A later overlapping clip starts when the earlier one ends, retaining its
-    original end. Clips never spill into the next chapter. Source data is not
-    changed so shortening/re-expanding a chapter doesn't destroy its inserts.
+    original scheduled end. Adjacent visuals crossfade by keeping the outgoing
+    slide fully opaque underneath while the incoming slide fades over it. This
+    prevents the normal scene from flashing between illustrations. Source data
+    is not changed so shortening/re-expanding a chapter doesn't destroy inserts.
     """
     assets = {str(a.get("id")): a for a in project.get("materials", []) if isinstance(a, dict)}
     clips, issues = [], []
@@ -96,16 +98,46 @@ def compile_scene_plan(project: dict) -> dict:
             if end <= start:
                 issues.append({"id": insert["id"], "chapterId": chapter_id, "reason": "outside-or-overlapped"})
                 continue
-            fade = min(insert["transitionDuration"], (end - start) / 2)
-            keyframes = ([[start, 0], [start + fade, 1], [end - fade, 1], [end, 0]]
-                         if insert["transition"] != "none" else [[start, 1], [end, 1]])
             clips.append({
                 **insert, "chapterId": chapter_id, "chapterTitle": chapter.get("title", ""),
-                "mode": mode, "start": start, "end": end, "opacity": keyframes,
+                "mode": mode, "start": start, "end": end, "scheduledEnd": end,
+                "opacity": [[start, 1], [end, 1]],
                 "layout": IMAGE_LAYOUT,
             })
             occupied_until = end
-    return {"version": 1, "clips": clips, "issues": issues}
+
+    epsilon = 1e-6
+    incoming_fades = [
+        (min(clip["transitionDuration"], (clip["scheduledEnd"] - clip["start"]) / 2)
+         if clip["transition"] != "none" else 0.0)
+        for clip in clips
+    ]
+    for index, clip in enumerate(clips):
+        scheduled_end = clip["scheduledEnd"]
+        fade_in = incoming_fades[index]
+        connected_next = (
+            index + 1 < len(clips)
+            and abs(clips[index + 1]["start"] - scheduled_end) <= epsilon
+        )
+        next_fade = incoming_fades[index + 1] if connected_next else 0.0
+        frames = (
+            [[clip["start"], 0], [clip["start"] + fade_in, 1]]
+            if fade_in > 0
+            else [[clip["start"], 1]]
+        )
+        if connected_next:
+            # The outgoing slide stays opaque under the incoming alpha ramp.
+            # Sequential alpha overlays then produce a true A→B crossfade,
+            # without exposing the base composition between the two images.
+            clip["end"] = scheduled_end + next_fade
+            frames.extend([[scheduled_end, 1], [clip["end"], 1]])
+        elif clip["transition"] != "none":
+            fade_out = min(clip["transitionDuration"], (scheduled_end - clip["start"]) / 2)
+            frames.extend([[scheduled_end - fade_out, 1], [scheduled_end, 0]])
+        else:
+            frames.append([scheduled_end, 1])
+        clip["opacity"] = frames
+    return {"version": 2, "clips": clips, "issues": issues}
 
 
 def opacity_at(clip: dict, time: float) -> float:
@@ -119,9 +151,18 @@ def opacity_at(clip: dict, time: float) -> float:
 
 
 def scene_at(plan: dict, time: float) -> dict:
-    clip = next((clip for clip in plan["clips"] if clip["start"] <= time < clip["end"]), None)
-    return {"mode": clip["mode"] if clip else "normal", "visual": clip,
-            "opacity": opacity_at(clip, time) if clip else 0.0}
+    active = [
+        {"visual": clip, "opacity": opacity_at(clip, time)}
+        for clip in plan["clips"]
+        if clip["start"] <= time < clip["end"]
+    ]
+    visual = active[-1]["visual"] if active else None
+    return {
+        "mode": visual["mode"] if visual else "normal",
+        "visual": visual,
+        "layers": active,
+        "opacity": max((layer["opacity"] for layer in active), default=0.0),
+    }
 
 
 def auto_place_visuals(chapter: dict, duration: float, *, asset_ids: list | None = None,

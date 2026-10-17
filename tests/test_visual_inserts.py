@@ -48,7 +48,13 @@ class VisualScheduleTests(unittest.TestCase):
         project["chapters"][0]["visualInserts"] = [{"assetId": "art", "startTime": 290, "duration": 100}]
         project["chapters"][1]["visualInserts"] = [{"assetId": "art2", "startTime": 0, "duration": 10}]
         plan = compile_scene_plan(project)
-        self.assertEqual(plan["clips"][0]["end"], 300)
+        self.assertEqual(plan["clips"][0]["scheduledEnd"], 300)
+        self.assertEqual(plan["clips"][0]["end"], 300.75)
+        boundary = scene_at(plan, 300.375)
+        self.assertEqual([layer["visual"]["assetId"] for layer in boundary["layers"]], ["art", "art2"])
+        self.assertEqual(boundary["layers"][0]["opacity"], 1)
+        self.assertAlmostEqual(boundary["layers"][1]["opacity"], .5)
+        self.assertEqual(boundary["opacity"], 1)
         self.assertEqual(scene_at(plan, 300)["visual"]["assetId"], "art2")
         self.assertEqual(scene_at(plan, 310)["mode"], "normal")
 
@@ -60,10 +66,43 @@ class VisualScheduleTests(unittest.TestCase):
             {"id": "c", "assetId": "art", "startTime": 50, "duration": 10, "transition": "none"},
         ]
         plan = compile_scene_plan(project)
-        self.assertEqual([(c["start"], c["end"]) for c in plan["clips"]], [(10, 30), (30, 40), (50, 60)])
+        self.assertEqual([(c["start"], c["scheduledEnd"]) for c in plan["clips"]], [(10, 30), (30, 40), (50, 60)])
+        self.assertEqual(plan["clips"][0]["end"], 30.75)
         self.assertEqual(scene_at(plan, 30)["visual"]["id"], "b")
         self.assertEqual(scene_at(plan, 45)["mode"], "normal")
         self.assertEqual(scene_at(plan, 50)["opacity"], 1)
+
+    def test_adjacent_visuals_crossfade_over_each_other_without_base_flash(self):
+        project = project_fixture()
+        project["chapters"][0]["visualInserts"] = [
+            {"id": "old", "assetId": "art", "startTime": 10, "duration": 20},
+            {"id": "new", "assetId": "art2", "startTime": 30, "duration": 20},
+        ]
+        plan = compile_scene_plan(project)
+        middle = scene_at(plan, 30.375)
+        self.assertEqual([layer["visual"]["id"] for layer in middle["layers"]], ["old", "new"])
+        self.assertEqual(middle["layers"][0]["opacity"], 1)
+        self.assertAlmostEqual(middle["layers"][1]["opacity"], .5)
+        self.assertEqual(middle["opacity"], 1)
+        after = scene_at(plan, 30.75)
+        self.assertEqual([layer["visual"]["id"] for layer in after["layers"]], ["new"])
+        self.assertEqual(after["opacity"], 1)
+
+    def test_export_chain_keeps_outgoing_slide_opaque_during_crossfade(self):
+        from bookender.visual_render import visual_filter_chain
+
+        project = project_fixture()
+        project["chapters"][0]["visualInserts"] = [
+            {"id": "old", "assetId": "art", "startTime": 10, "duration": 20},
+            {"id": "new", "assetId": "art2", "startTime": 30, "duration": 20},
+        ]
+        clips = compile_scene_plan(project)["clips"]
+        parts, output = visual_filter_chain(
+            clips, start=0, duration=60, input_offset=2, base_label="base"
+        )
+        self.assertNotIn("fade=t=out", parts[0])
+        self.assertIn("fade=t=in:st=30.000000000", parts[2])
+        self.assertEqual(output, "visual_composite_1")
 
     def test_auto_single_multiple_short_and_append(self):
         chapter = {"id": "one", "imageAssetId": "art"}
