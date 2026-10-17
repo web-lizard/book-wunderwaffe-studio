@@ -698,6 +698,24 @@
         <template v-if="currentBookChapter">
           <input v-model="bookChapterTitle" class="book-chapter-title" type="text"
                  aria-label="Название главы" @input="markBookDirty" />
+          <details class="chapter-tech-panel" :open="bookChapterTechEnabled">
+            <summary>
+              <span><b>Служебный канон главы</b><small>Не попадёт в озвучку, читательский экспорт и объём главы</small></span>
+              <i>{{ bookChapterTechEnabled ? 'TECH включён' : 'Не используется' }}</i>
+            </summary>
+            <button v-if="!bookChapterTechEnabled" class="book-secondary" type="button" @click="enableChapterTech">
+              Добавить TECH-блок
+            </button>
+            <template v-else>
+              <textarea v-model="bookChapterTechnicalContent" class="chapter-tech-editor" rows="12"
+                        spellcheck="true" aria-label="Служебный канон главы"
+                        @input="markBookDirty"></textarea>
+              <div class="chapter-tech-actions">
+                <small>Локальный канон имеет приоритет для анализа и иллюстраций.</small>
+                <button class="danger" type="button" @click="removeChapterTech">Удалить TECH-блок</button>
+              </div>
+            </template>
+          </details>
           <div class="book-text-editor-wrap">
             <div ref="bookHighlightLayer" class="book-text-highlights" aria-hidden="true" v-html="bookHighlightedHtml"></div>
             <textarea ref="bookTextEditor" v-model="bookChapterContent" class="book-text-editor"
@@ -1527,6 +1545,8 @@ const bookSearch = ref('')
 const currentBookChapterId = ref(null)
 const bookChapterTitle = ref('')
 const bookChapterContent = ref('')
+const bookChapterTechnicalContent = ref('')
+const bookChapterTechEnabled = ref(false)
 const bookSelection = ref(null)
 const viewedTextVersion = ref(null)
 const activeMetaNoteId = ref(null)
@@ -2839,7 +2859,9 @@ function hydrateBookState(record) {
   const preferred = chapters.find((item) => item.id === currentBookChapterId.value) || chapters[0] || null
   currentBookChapterId.value = preferred?.id || null
   bookChapterTitle.value = preferred?.title || ''
-  bookChapterContent.value = preferred?.content || ''
+  bookChapterContent.value = preferred?.reader_content ?? preferred?.content ?? ''
+  bookChapterTechnicalContent.value = preferred?.technical_content || ''
+  bookChapterTechEnabled.value = Boolean(preferred?.has_technical_block)
   bookSelection.value = null
   viewedTextVersion.value = null
   bookSaveState.value = 'saved'
@@ -2861,6 +2883,8 @@ function installBookRecord(record, { preserveDraft = false } = {}) {
         chapterId: currentBookChapterId.value,
         title: bookChapterTitle.value,
         content: bookChapterContent.value,
+        technicalContent: bookChapterTechnicalContent.value,
+        techEnabled: bookChapterTechEnabled.value,
         saveState: bookSaveState.value,
         videoSyncState: bookVideoTextSyncState.value,
         revision: bookEditRevision,
@@ -2872,6 +2896,8 @@ function installBookRecord(record, { preserveDraft = false } = {}) {
   currentBookChapterId.value = draft.chapterId
   bookChapterTitle.value = draft.title
   bookChapterContent.value = draft.content
+  bookChapterTechnicalContent.value = draft.technicalContent
+  bookChapterTechEnabled.value = draft.techEnabled
   bookSaveState.value = draft.saveState
   bookVideoTextSyncState.value = draft.videoSyncState
   bookEditRevision = draft.revision
@@ -2880,7 +2906,7 @@ function installBookRecord(record, { preserveDraft = false } = {}) {
 function addBookAudioToVideo(record) {
   const grouped = new Map()
   const chapterHashes = new Map(
-    (record?.chapters || []).map((chapter) => [chapter.id, chapter.content_hash]),
+    (record?.chapters || []).map((chapter) => [chapter.id, chapter.narration_hash || chapter.content_hash]),
   )
   for (const audio of record?.audio_assets || []) {
     const chapterHash = chapterHashes.get(audio.chapter_id)
@@ -3044,9 +3070,9 @@ function syncBookChaptersToVideo(record, master = null) {
       id: previous.id || `book-chapter-${chapter.id}`,
       chapterId: chapter.id,
       title: chapter.title,
-      text: chapter.content,
+      text: chapter.reader_content ?? chapter.content,
       isZero: Boolean(chapter.is_zero),
-      sourceContentHash: chapter.content_hash,
+      sourceContentHash: chapter.narration_hash || chapter.content_hash,
       start_seconds: start,
       end_seconds: end,
       sourceStartSeconds: sourceStart,
@@ -3173,9 +3199,9 @@ async function performProjectSwitch(projectUuid, { initial = false } = {}) {
         id: `book-chapter-${chapter.id}`,
         chapterId: chapter.id,
         title: chapter.title,
-        text: chapter.content,
+        text: chapter.reader_content ?? chapter.content,
         isZero: Boolean(chapter.is_zero),
-        sourceContentHash: chapter.content_hash,
+        sourceContentHash: chapter.narration_hash || chapter.content_hash,
         start_seconds: 0,
         end_seconds: 0,
       }))
@@ -3298,7 +3324,9 @@ async function selectBookChapter(chapterId) {
   if (!chapter) return
   currentBookChapterId.value = chapterId
   bookChapterTitle.value = chapter.title
-  bookChapterContent.value = chapter.content
+  bookChapterContent.value = chapter.reader_content ?? chapter.content
+  bookChapterTechnicalContent.value = chapter.technical_content || ''
+  bookChapterTechEnabled.value = Boolean(chapter.has_technical_block)
   bookSaveState.value = 'saved'
   bookEditRevision = 0
   previewAudio.value = null
@@ -3312,6 +3340,28 @@ function markBookDirty() {
   bookSaveState.value = 'modified'
   clearTimeout(bookAutosaveTimer)
   bookAutosaveTimer = setTimeout(() => { void saveCurrentChapter({ silent: true }) }, 900)
+}
+
+function composeBookChapterContent() {
+  const prose = String(bookChapterContent.value || '').replace(/^\s*\n/, '')
+  const technical = String(bookChapterTechnicalContent.value || '').trim()
+  if (!bookChapterTechEnabled.value || !technical) return prose
+  return `[[TECH_CHAPTER]]\n${technical}\n[[/TECH_CHAPTER]]${prose ? `\n\n${prose}` : ''}`
+}
+
+function enableChapterTech() {
+  bookChapterTechEnabled.value = true
+  if (!bookChapterTechnicalContent.value.trim()) {
+    bookChapterTechnicalContent.value = `chapter: ${bookChapterTitle.value || 'Без названия'}\n\n[VISUAL]\n\n[CHARACTERS]\n\n[LOCATION]\n\n[CONTINUITY]\n\n[DRAMATURGY]\n\n[ILLUSTRATION_RULES]\n`
+  }
+  markBookDirty()
+}
+
+function removeChapterTech() {
+  if (!window.confirm('Удалить служебный TECH-блок этой главы? Художественный текст останется.')) return
+  bookChapterTechEnabled.value = false
+  bookChapterTechnicalContent.value = ''
+  markBookDirty()
 }
 
 async function syncSavedBookChapterToVideo(saved) {
@@ -3328,9 +3378,11 @@ async function syncSavedBookChapterToVideo(saved) {
     bookVideoTextSyncState.value = 'error'
     return false
   }
+  const readerContent = saved.reader_content ?? saved.content
+  const narrationHash = saved.narration_hash || saved.content_hash
   const contentChanged = (
-    videoChapter.text !== saved.content
-    || (videoChapter.sourceContentHash && videoChapter.sourceContentHash !== saved.content_hash)
+    videoChapter.text !== readerContent
+    || (videoChapter.sourceContentHash && videoChapter.sourceContentHash !== narrationHash)
   )
   const invalidAudioIds = new Set()
   for (const material of project.materials) {
@@ -3338,7 +3390,7 @@ async function syncSavedBookChapterToVideo(saved) {
     if (
       material.role === 'chapter-audio'
       && Number(material.chapterId) === Number(saved.id)
-      && material.sourceTextHash !== saved.content_hash
+      && material.sourceTextHash !== narrationHash
     ) invalidAudioIds.add(material.id)
   }
   if (invalidAudioIds.has(videoChapter.audioAssetId)) videoChapter.audioAssetId = null
@@ -3348,9 +3400,9 @@ async function syncSavedBookChapterToVideo(saved) {
     project.materials.splice(0, project.materials.length, ...retained)
   }
   videoChapter.title = saved.title
-  videoChapter.text = saved.content
+  videoChapter.text = readerContent
   videoChapter.isZero = Boolean(saved.is_zero)
-  videoChapter.sourceContentHash = saved.content_hash
+  videoChapter.sourceContentHash = narrationHash
   dirty.value = true
   bookVideoTextSyncState.value = 'syncing'
   try {
@@ -3480,10 +3532,11 @@ async function restoreTextVersion(item) { if (!window.confirm('Восстано�
 async function saveCurrentChapter({ silent = false } = {}) {
   const chapter = currentBookChapter.value
   if (!chapter) return true
+  const storedContent = composeBookChapterContent()
   if (
     bookSaveState.value === 'saved'
     && chapter.title === bookChapterTitle.value
-    && chapter.content === bookChapterContent.value
+    && chapter.content === storedContent
   ) {
     if (bookVideoTextSyncState.value === 'error') {
       await syncSavedBookChapterToVideo(chapter)
@@ -3497,7 +3550,8 @@ async function saveCurrentChapter({ silent = false } = {}) {
     while (currentBookChapterId.value === chapterId) {
       const revision = bookEditRevision
       const title = bookChapterTitle.value
-      const content = bookChapterContent.value
+      const content = composeBookChapterContent()
+      const removeTechnicalBlock = Boolean(chapter.has_technical_block && !bookChapterTechEnabled.value)
       bookSaveState.value = 'saving'
       try {
         const saved = await apiRequest(
@@ -3505,21 +3559,21 @@ async function saveCurrentChapter({ silent = false } = {}) {
           {
             method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ title, content }),
+            body: JSON.stringify({ title, content, remove_technical_block: removeTechnicalBlock }),
           },
         )
         const index = activeProjectRecord.value.chapters.findIndex((item) => item.id === saved.id)
         if (index >= 0) activeProjectRecord.value.chapters[index] = saved
         for (const asset of activeProjectRecord.value.audio_assets || []) {
           if (asset.chapter_id === saved.id) {
-            asset.is_stale = Boolean(asset.source_text_hash && asset.source_text_hash !== saved.content_hash)
+            asset.is_stale = Boolean(asset.source_text_hash && asset.source_text_hash !== (saved.narration_hash || saved.content_hash))
           }
         }
         const unchanged = (
           currentBookChapterId.value === chapterId
           && bookEditRevision === revision
           && bookChapterTitle.value === title
-          && bookChapterContent.value === content
+          && composeBookChapterContent() === content
         )
         if (!unchanged) {
           bookSaveState.value = 'modified'
@@ -3531,7 +3585,7 @@ async function saveCurrentChapter({ silent = false } = {}) {
           ||
           bookEditRevision !== revision
           || bookChapterTitle.value !== title
-          || bookChapterContent.value !== content
+          || composeBookChapterContent() !== content
         ) {
           bookSaveState.value = 'modified'
           continue
@@ -4962,7 +5016,7 @@ function selectChapter(chapter) {
 
 const chapterStats = computed(() => new Map((activeProjectRecord.value?.chapters || []).map(chapter => [
   chapter.id,
-  `${(chapter.content?.match(/\S+/g) || []).length.toLocaleString('ru-RU')} слов · ${(chapter.content?.split(/\n\s*\n|\n/).filter(line => line.trim()) || []).length} абз.`,
+  `${Number(chapter.artistic_word_count ?? (chapter.reader_content?.match(/\S+/g) || []).length).toLocaleString('ru-RU')} слов · ${Number(chapter.artistic_paragraph_count ?? (chapter.reader_content?.split(/\n\s*\n/).filter(line => line.trim()) || []).length)} абз.`,
 ])))
 const chapterColors = computed(() => new Map((activeProjectRecord.value?.chapters || []).map((chapter, index) => [chapter.id, chapterColor(index)])))
 function chapterAccent(chapter) {

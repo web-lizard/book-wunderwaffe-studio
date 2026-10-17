@@ -17,6 +17,7 @@ import uuid as uuidlib
 from pathlib import Path
 from typing import Any, Callable
 
+from .chapter_tech import reader_text
 from .logging import log_event
 from .paths import USER_DATA
 from .repository import ProjectNotFoundError, ProjectRepository, utc_now
@@ -197,7 +198,7 @@ class TtsService:
     ) -> dict[str, Any]:
         self.require_available()
         project = self.repository.get_project(project_uuid, include_details=True)
-        clean_text = " ".join(str(text or "").split())[:500]
+        clean_text = " ".join(reader_text(text).split())[:500]
         if not clean_text:
             clean_text = (
                 "Это короткая проба голоса Book Wunderwaffe Studio. "
@@ -251,7 +252,9 @@ class TtsService:
         )
         if chapter is None:
             raise ProjectNotFoundError(f"{project_uuid}/chapter/{chapter_id}")
-        if not chapter["content"].strip():
+        narration_text = str(chapter.get("reader_content") or "")
+        narration_hash = str(chapter.get("narration_hash") or chapter["content_hash"])
+        if not narration_text.strip():
             raise ValueError("Пустую главу нельзя озвучить.")
         settings = self._normalized_settings(project.get("tts_settings") or {})
         job_uuid = str(uuidlib.uuid4())
@@ -271,7 +274,7 @@ class TtsService:
             / "audio"
             / (
                 f"chapter-{chapter_id}-v{version_number:03d}-"
-                f"{chapter['content_hash'][:8]}-{job_uuid[:8]}.mp3"
+                f"{narration_hash[:8]}-{job_uuid[:8]}.mp3"
             )
         ).as_posix()
         now = utc_now()
@@ -284,7 +287,7 @@ class TtsService:
                     "message": "Задача добавлена в очередь",
                     "details": {
                         "chapter_id": chapter_id,
-                        "chunks": len(self._split_text_chunks(chapter["content"])),
+                        "chunks": len(self._split_text_chunks(narration_text)),
                     },
                 }
             ],
@@ -308,10 +311,10 @@ class TtsService:
                     chapter_id,
                     settings["provider"],
                     settings["voice"],
-                    chapter["content_hash"],
+                    narration_hash,
                     relative_output,
                     now,
-                    len(self._split_text_chunks(chapter["content"])),
+                    len(self._split_text_chunks(narration_text)),
                     diagnostics,
                     now,
                 ),
@@ -340,7 +343,7 @@ class TtsService:
             job_uuid=job_uuid,
             project_uuid=project_uuid,
             chapter_id=chapter_id,
-            source_text_hash=chapter["content_hash"],
+            source_text_hash=narration_hash,
             version_number=version_number,
         )
         return self.get_job(job_uuid)
@@ -351,7 +354,7 @@ class TtsService:
         jobs = [
             self.queue_chapter(project_uuid, chapter["id"], start=False)
             for chapter in project["chapters"]
-            if chapter["content"].strip()
+            if chapter.get("reader_content", "").strip()
         ]
         if not jobs:
             return []
@@ -575,7 +578,7 @@ class TtsService:
                 or bool(asset.get("is_stale"))
                 or (
                     asset.get("source_text_hash")
-                    and asset.get("source_text_hash") != chapter.get("content_hash")
+                    and asset.get("source_text_hash") != chapter.get("narration_hash")
                 )
             ):
                 missing_chapter_ids.append(int(chapter["id"]))
@@ -646,7 +649,7 @@ class TtsService:
                 {
                     "chapter_id": int(chapter["id"]),
                     "title": chapter["title"],
-                    "text": chapter["content"],
+                    "text": chapter["reader_content"],
                     "audio_asset_id": int(asset["id"]),
                     "start_seconds": round(start, 3),
                     "end_seconds": round(cursor, 3),
@@ -690,6 +693,8 @@ class TtsService:
             project_uuid, include_details=False
         )
         output = self._absolute_project_path(project_record, relative_output)
+        narration_text = str(chapter.get("reader_content") or "")
+        narration_hash = str(chapter.get("narration_hash") or chapter["content_hash"])
         output.parent.mkdir(parents=True, exist_ok=True)
         with self.repository.database.transaction() as connection:
             started = connection.execute(
@@ -710,11 +715,11 @@ class TtsService:
             "job_started",
             "Фоновый обработчик начал озвучивание",
             stage="Подготовка",
-            chunks=len(self._split_text_chunks(chapter["content"])),
+            chunks=len(self._split_text_chunks(narration_text)),
         )
         try:
             last_saved_progress = 0.0
-            chapter_chunk_count = len(self._split_text_chunks(chapter["content"]))
+            chapter_chunk_count = len(self._split_text_chunks(narration_text))
 
             def cancel_requested() -> bool:
                 return self._cancel_requested(job_uuid)
@@ -754,7 +759,7 @@ class TtsService:
                     )
 
             word_timings = self._synthesize(
-                chapter["content"],
+                narration_text,
                 output,
                 settings,
                 progress_callback=save_progress,
@@ -803,7 +808,7 @@ class TtsService:
                         chapter["id"],
                         relative_output,
                         settings["voice"],
-                        chapter["content_hash"],
+                        narration_hash,
                         now,
                         now,
                         f"{chapter['title']} · версия {version_number}",
@@ -834,7 +839,7 @@ class TtsService:
                     """,
                     (now, now, job_uuid),
                 )
-            self._clear_chunk_checkpoints(chapter["content"], output, settings)
+            self._clear_chunk_checkpoints(narration_text, output, settings)
             log_event(
                 "tts_job_finished",
                 job_uuid=job_uuid,

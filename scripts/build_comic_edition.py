@@ -101,10 +101,10 @@ def build() -> dict:
             "id": f"chapter-{chapter_id}",
             "chapterId": chapter_id,
             "title": source["title"],
-            "text": source["content"],
+            "text": source["reader_content"],
             "isZero": bool(source.get("is_zero")),
             "source": "editor",
-            "sourceContentHash": source["content_hash"],
+            "sourceContentHash": source["narration_hash"],
             "imageAssetId": None,
             "audioAssetId": None,
             "visualInserts": [],
@@ -134,8 +134,8 @@ def build() -> dict:
         source_start = float(timing["start_seconds"])
         source_end = float(timing["end_seconds"])
         chapter["title"] = source["title"]
-        chapter["text"] = source["content"]
-        chapter["sourceContentHash"] = source["content_hash"]
+        chapter["text"] = source["reader_content"]
+        chapter["sourceContentHash"] = source["narration_hash"]
         chapter["start_seconds"] = timeline_cursor
         timeline_cursor += (source_end - source_start) / playback_rate
         chapter["end_seconds"] = timeline_cursor
@@ -271,7 +271,7 @@ def build() -> dict:
         "chapters": len(CHAPTER_IDS),
         "frames": len(plan["clips"]),
         "globalPlaybackRate": GLOBAL_PLAYBACK_RATE,
-        "chapter5CompactCharacters": len(book_chapters[128]["content"]),
+        "chapter5CompactCharacters": len(book_chapters[128]["reader_content"]),
         "chapter5ArchivedTextVersionId": 4,
         "masterAudio": master["file_path"],
         "masterDuration": master["duration"],

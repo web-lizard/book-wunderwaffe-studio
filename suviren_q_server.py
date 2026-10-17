@@ -37,6 +37,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
+from bookender.chapter_tech import reader_text
 from bookender.logging import log_event
 from bookender.visual_inserts import auto_place_visuals, chapter_bounds, compile_scene_plan, normalize_visual_inserts
 from bookender.paths import DATABASE_PATH, USER_DATA
@@ -167,6 +168,7 @@ class ChapterCreateRequest(BaseModel):
 class ChapterUpdateRequest(BaseModel):
     title: str | None = None
     content: str | None = None
+    remove_technical_block: bool = False
 
 
 class ChapterOrderRequest(BaseModel):
@@ -1284,7 +1286,7 @@ def safe_book_export_name(value: Any, fallback: str) -> str:
 
 def chapter_export_text(chapter: dict[str, Any], position: int) -> str:
     title = str(chapter.get("title") or f"Глава {position}")
-    content = str(chapter.get("content") or "").strip()
+    content = reader_text(chapter.get("content")).strip()
     return f"{title}\r\n{'=' * len(title)}\r\n\r\n{content}\r\n"
 
 
@@ -1309,7 +1311,7 @@ def complete_book_export_text(project: dict[str, Any]) -> str:
                 f"Глава {position}. {chapter_title}",
                 "-" * 48,
                 "",
-                str(chapter.get("content") or "").strip(),
+                reader_text(chapter.get("content")).strip(),
             ]
         )
     return "\ufeff" + "\r\n".join(sections).rstrip() + "\r\n"
@@ -1941,6 +1943,7 @@ def update_project_chapter(
             chapter_id,
             title=data.title,
             content=data.content,
+            remove_technical_block=data.remove_technical_block,
         )
     except Exception as exc:
         raise project_http_error(exc) from exc

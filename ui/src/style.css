@@ -4643,7 +4643,7 @@ body.resizing-timeline {
 
 .book-editor-column {
   display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr) auto auto;
+  grid-template-rows: auto auto auto minmax(0, 1fr) auto auto;
   min-width: 0;
   min-height: 0;
   padding: 16px clamp(20px, 3.2vw, 54px) 12px;
@@ -4720,6 +4720,39 @@ body.resizing-timeline {
   font-size: clamp(21px, 2.2vw, 34px);
   line-height: 1.15;
 }
+.chapter-tech-panel {
+  margin: 0 0 8px;
+  padding: 8px 10px;
+  border: 1px solid rgba(216, 174, 77, .25);
+  border-radius: 8px;
+  background: rgba(75, 54, 16, .12);
+}
+.chapter-tech-panel summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  cursor: pointer;
+  color: #dbc988;
+  font-size: 10px;
+}
+.chapter-tech-panel summary span { display: grid; gap: 2px; }
+.chapter-tech-panel summary small { color: var(--muted); font-weight: 400; }
+.chapter-tech-panel summary i { color: #a89558; font-style: normal; white-space: nowrap; }
+.chapter-tech-panel > button { margin-top: 9px; }
+.chapter-tech-editor {
+  width: 100%;
+  margin-top: 9px;
+  resize: vertical;
+  border: 1px solid rgba(216, 174, 77, .24);
+  border-radius: 6px;
+  background: #100e0b;
+  color: #ddd2af;
+  font: 11px/1.5 "Cascadia Mono", Consolas, monospace;
+}
+.chapter-tech-actions { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 6px; }
+.chapter-tech-actions small { color: var(--muted); }
+.chapter-tech-actions .danger { border: 1px solid rgba(211, 94, 88, .25); background: transparent; color: #c67873; }
 .book-text-editor {
   width: 100%;
   min-height: 0;

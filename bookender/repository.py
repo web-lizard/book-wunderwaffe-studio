@@ -10,6 +10,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
+from .chapter_tech import (
+    chapter_text_metadata,
+    preserve_technical_block,
+    split_chapter_text,
+)
 from .database import BookenderDatabase
 from .logging import log_event
 from .paths import BACKUPS_DIR, PROJECTS_DIR, USER_DATA, ensure_user_directories
@@ -38,6 +43,13 @@ def json_value(value: str | None, default: Any = None) -> Any:
 
 def row_dict(row: Any) -> dict[str, Any] | None:
     return dict(row) if row is not None else None
+
+
+def chapter_payload(row: Any) -> dict[str, Any]:
+    chapter = dict(row)
+    chapter.update(chapter_text_metadata(chapter.get("content")))
+    chapter["narration_hash"] = content_hash(str(chapter["reader_content"]))
+    return chapter
 
 
 class ProjectNotFoundError(LookupError):
@@ -196,7 +208,7 @@ class ProjectRepository:
                 project["book"] = dict(book) if book else None
                 if book:
                     project["chapters"] = [
-                        dict(chapter)
+                        chapter_payload(chapter)
                         for chapter in connection.execute(
                             """
                             SELECT * FROM chapters
@@ -231,7 +243,7 @@ class ProjectRepository:
                 ).fetchone()
                 project["tts_settings"] = dict(tts) if tts else None
                 chapter_hashes = {
-                    int(chapter["id"]): chapter["content_hash"]
+                    int(chapter["id"]): chapter["narration_hash"]
                     for chapter in project["chapters"]
                 }
                 project["audio_assets"] = []
@@ -412,6 +424,7 @@ class ProjectRepository:
         content: str = "",
         is_zero: bool = False,
     ) -> dict[str, Any]:
+        split_chapter_text(content)
         now = utc_now()
         with self.database.transaction() as connection:
             book = self._book_for_project(connection, project_uuid)
@@ -478,7 +491,7 @@ class ProjectRepository:
             ).fetchone()
             if row is None:
                 raise ProjectNotFoundError(f"{project_uuid}/chapter/{chapter_id}")
-            return dict(row)
+            return chapter_payload(row)
 
     def update_chapter(
         self,
@@ -487,6 +500,7 @@ class ProjectRepository:
         *,
         title: str | None = None,
         content: str | None = None,
+        remove_technical_block: bool = False,
     ) -> dict[str, Any]:
         now = utc_now()
         with self.database.transaction() as connection:
@@ -498,7 +512,14 @@ class ProjectRepository:
             if chapter is None:
                 raise ProjectNotFoundError(f"{project_uuid}/chapter/{chapter_id}")
             next_title = chapter["title"] if title is None else (title.strip() or chapter["title"])
-            next_content = chapter["content"] if content is None else content
+            if content is None:
+                next_content = chapter["content"]
+            else:
+                next_content = preserve_technical_block(
+                    chapter["content"],
+                    content,
+                    remove=remove_technical_block,
+                )
             connection.execute(
                 """
                 UPDATE chapters
@@ -983,9 +1004,9 @@ class ProjectRepository:
                 "id": f"chapter-{chapter['id']}",
                 "chapterId": chapter["id"],
                 "title": chapter["title"],
-                "text": chapter["content"],
+                "text": chapter["reader_content"],
                 "isZero": bool(chapter.get("is_zero")),
-                "sourceContentHash": chapter["content_hash"],
+                "sourceContentHash": chapter["narration_hash"],
                 # Until narration duration is known, keep a valid provisional
                 # one-second slot. The video editor can retime it later.
                 "start_seconds": index,
