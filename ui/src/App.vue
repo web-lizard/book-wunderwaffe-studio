@@ -719,9 +719,8 @@
               <span>{{ formatTime(bookPlayerDuration, true) }} · {{ voiceShortLabel(bookPlayerAsset.voice) }}</span>
             </div>
             <audio ref="bookAudioEl" :src="bookPlayerUrl" controls preload="metadata"
-                   @loadedmetadata="onBookAudioMetadata" @timeupdate="onBookAudioTime"
-                   @play="bookPlayerPlaying = true" @pause="bookPlayerPlaying = false"
-                   @ended="bookPlayerPlaying = false"></audio>
+                   @loadedmetadata="onBookAudioMetadata" @timeupdate="onBookAudioTime" @seeked="onBookAudioTime"
+                   @play="onBookAudioPlay" @pause="onBookAudioPause" @ended="onBookAudioEnded"></audio>
             <button type="button" :disabled="!previousChapterAudio" title="Предыдущая версия" @click="selectAdjacentChapterAudio(-1)">‹</button>
             <button type="button" :disabled="!nextChapterAudio" title="Следующая версия" @click="selectAdjacentChapterAudio(1)">›</button>
             <button v-if="!bookPlayerAsset.temporary" class="book-player-video" type="button"
@@ -738,15 +737,15 @@
               <header>
                 <b>Текст озвучки</b>
                 <small :class="{ exact: bookPlayerHasExactTimings }">
-                  {{ bookPlayerHasExactTimings ? 'точные метки слов' : 'расчётные метки — переозвучьте главу для точных' }}
+                  {{ bookPlayerHasExactTimings ? `точная синхронизация · ${bookPlayerTimingCoveragePercent}%` : 'нет точных меток — переозвучьте главу' }}
                 </small>
               </header>
-              <div class="book-word-navigator-copy">
+              <div ref="bookWordNavigatorCopy" class="book-word-navigator-copy">
                 <p v-for="paragraph in bookPlayerParagraphs" :key="paragraph[0]?.paragraph"
-                   v-memo="[paragraph, currentBookPlayerWord?.paragraph === paragraph[0]?.paragraph ? currentBookPlayerWord?.index : -1]">
+                   v-memo="[paragraph, bookPlayerHasExactTimings]">
                   <button v-for="word in paragraph" :key="word.index" type="button"
-                          :class="{ current: currentBookPlayerWord?.index === word.index }"
-                          :title="`${formatTime(word.start, true)} · перейти к слову`"
+                          :data-word-index="word.index" :disabled="!bookPlayerHasExactTimings"
+                          :title="bookPlayerHasExactTimings ? `${formatTime(word.start, true)} · перейти к слову` : 'Для точной навигации переозвучьте главу'"
                           @click="seekBookPlayer(word.start)">{{ word.text }}</button>
                 </p>
               </div>
@@ -1480,7 +1479,7 @@ import {
   chapterTimelineDuration, chapterTimelineWordTimings, chapterTimelineWords,
   clone, formatTime, formatTimecode, freshProject, materialType, normalizeChapter,
   normalizeProject, parseJsonObject, parseTimecode, readingCaptionChunks,
-  timedTextWords, uid, wordAtTime, wordsByParagraph,
+  timedTextWords, uid, wordAtTime, wordTimingCoverage, wordsByParagraph,
 } from './editorModel.js'
 import { chapterColor, followWord } from './editorNavigation.js'
 import { createFrameGate } from './playbackClock.js'
@@ -1559,7 +1558,6 @@ const voiceLanguage = ref('ru')
 const previewLoading = ref(false)
 const previewAudio = ref(null)
 const selectedBookAudioId = ref(null)
-const bookPlayerTime = ref(0)
 const bookPlayerDuration = ref(0)
 const bookPlayerPlaying = ref(false)
 const bookPlayerVolume = ref(0.86)
@@ -1587,6 +1585,7 @@ const bookChapterImageInput = ref(null)
 const bookTextEditor = ref(null)
 const bookHighlightLayer = ref(null)
 const bookAudioEl = ref(null)
+const bookWordNavigatorCopy = ref(null)
 const audioEl = ref(null)
 const musicEl = ref(null)
 const videoEl = ref(null)
@@ -1656,6 +1655,8 @@ let renderPoller = null
 let noticeTimer = null
 let comicTelegramTimer = null
 let playbackFrame = null
+let bookPlaybackFrame = null
+let renderedBookWordButton = null
 const playbackUiGate = createFrameGate({ framesPerSecond: 10 })
 let renderedWaveformElement = null
 let renderedWaveformBars = -1
@@ -1872,11 +1873,13 @@ const bookPlayerWords = computed(() => timedTextWords(
   selectedBookAudio.value?.is_stale ? [] : selectedBookAudioMetadata.value.word_timings,
 ))
 const bookPlayerParagraphs = computed(() => wordsByParagraph(bookPlayerWords.value))
-const currentBookPlayerWord = computed(() => wordAtTime(bookPlayerWords.value, bookPlayerTime.value))
+const bookPlayerTimingCoverage = computed(() => wordTimingCoverage(bookPlayerWords.value))
+const bookPlayerTimingCoveragePercent = computed(() => Math.round(bookPlayerTimingCoverage.value * 100))
 const bookPlayerHasExactTimings = computed(() => (
   Array.isArray(selectedBookAudioMetadata.value.word_timings)
   && selectedBookAudioMetadata.value.word_timings.length > 0
   && !selectedBookAudio.value?.is_stale
+  && bookPlayerTimingCoverage.value >= 0.98
 ))
 const ttsProgressState = computed(() => {
   const jobs = narrationJobs.value
@@ -3951,8 +3954,8 @@ function selectBookAudio(asset, autoplay = false) {
   bookPlayerShouldAutoplay = autoplay
   previewAudio.value = null
   selectedBookAudioId.value = asset.id
-  bookPlayerTime.value = 0
   bookPlayerDuration.value = Number(asset.duration || 0)
+  clearBookWordHighlight()
   if (bookPlayerUrl.value === previousUrl) {
     bookPlayerShouldAutoplay = false
     void reloadBookPlayer(autoplay)
@@ -3973,13 +3976,14 @@ function toggleBookPlayer() {
 
 function stopBookPlayer() {
   bookPlayerLoadToken += 1
+  stopBookPlaybackClock()
   const player = bookAudioEl.value
   if (player) {
     player.pause()
     player.currentTime = 0
   }
   bookPlayerPlaying.value = false
-  bookPlayerTime.value = 0
+  updateBookWordHighlight(0)
 }
 
 async function reloadBookPlayer(autoplay = false) {
@@ -3989,9 +3993,10 @@ async function reloadBookPlayer(autoplay = false) {
   if (!player || !bookPlayerUrl.value || token !== bookPlayerLoadToken) return
   player.pause()
   player.currentTime = 0
+  stopBookPlaybackClock()
   bookPlayerPlaying.value = false
-  bookPlayerTime.value = 0
   bookPlayerDuration.value = Number(bookPlayerAsset.value?.duration || 0)
+  updateBookWordHighlight(0)
   applyBookPlayerVolume()
   if (!autoplay) return
   const ready = await waitForBookPlayerReady(player)
@@ -4031,7 +4036,7 @@ function seekBookPlayer(value) {
   if (!player) return
   const target = Math.max(0, Math.min(Number(value) || 0, bookPlayerDuration.value || Number(value) || 0))
   try { player.currentTime = target } catch { return }
-  bookPlayerTime.value = target
+  updateBookWordHighlight(target)
 }
 
 function applyBookPlayerVolume() {
@@ -4042,10 +4047,69 @@ function onBookAudioMetadata() {
   const player = bookAudioEl.value
   bookPlayerDuration.value = Number.isFinite(player?.duration) ? player.duration : Number(bookPlayerAsset.value?.duration || 0)
   applyBookPlayerVolume()
+  updateBookWordHighlight(player?.currentTime || 0)
 }
 
 function onBookAudioTime() {
-  bookPlayerTime.value = bookAudioEl.value?.currentTime || 0
+  updateBookWordHighlight(bookAudioEl.value?.currentTime || 0)
+}
+
+function clearBookWordHighlight() {
+  if (!renderedBookWordButton) return
+  renderedBookWordButton.classList.remove('current')
+  renderedBookWordButton.removeAttribute('aria-current')
+  renderedBookWordButton = null
+}
+
+function updateBookWordHighlight(timeValue) {
+  const container = bookWordNavigatorCopy.value
+  if (!container || !bookPlayerHasExactTimings.value) {
+    clearBookWordHighlight()
+    return
+  }
+  const word = wordAtTime(bookPlayerWords.value, timeValue, { activeOnly: true })
+  const button = word ? container.querySelector(`[data-word-index="${word.index}"]`) : null
+  if (button === renderedBookWordButton && (!button || button.isConnected)) return
+  clearBookWordHighlight()
+  if (!button) return
+  button.classList.add('current')
+  button.setAttribute('aria-current', 'true')
+  renderedBookWordButton = button
+}
+
+function tickBookPlayback() {
+  bookPlaybackFrame = null
+  const player = bookAudioEl.value
+  if (!player) return
+  updateBookWordHighlight(player.currentTime || 0)
+  if (!player.paused && !player.ended) bookPlaybackFrame = requestAnimationFrame(tickBookPlayback)
+}
+
+function startBookPlaybackClock() {
+  if (bookPlaybackFrame !== null) cancelAnimationFrame(bookPlaybackFrame)
+  bookPlaybackFrame = requestAnimationFrame(tickBookPlayback)
+}
+
+function stopBookPlaybackClock() {
+  if (bookPlaybackFrame !== null) cancelAnimationFrame(bookPlaybackFrame)
+  bookPlaybackFrame = null
+}
+
+function onBookAudioPlay() {
+  bookPlayerPlaying.value = true
+  startBookPlaybackClock()
+}
+
+function onBookAudioPause() {
+  bookPlayerPlaying.value = false
+  stopBookPlaybackClock()
+  onBookAudioTime()
+}
+
+function onBookAudioEnded() {
+  bookPlayerPlaying.value = false
+  stopBookPlaybackClock()
+  onBookAudioTime()
 }
 
 async function refreshActiveProjectRecord() {
@@ -6717,6 +6781,11 @@ watch(() => bookPlayerUrl.value, () => {
   bookPlayerShouldAutoplay = false
   void reloadBookPlayer(autoplay)
 }, { flush: 'sync' })
+
+watch([bookPlayerWords, bookPlayerHasExactTimings], () => {
+  clearBookWordHighlight()
+  nextTick(() => updateBookWordHighlight(bookAudioEl.value?.currentTime || 0))
+}, { flush: 'post' })
 
 watch([
   () => previousChapter.value?.id,

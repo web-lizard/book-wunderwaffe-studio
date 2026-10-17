@@ -27,7 +27,13 @@ BEAT_STARTS = {
     2: (0.0, 60.0, 118.6, 175.0, 233.1, 285.0, 339.0, 390.0, 444.9,
         500.0, 559.3, 620.0, 686.4, 745.0, 809.3, 870.0, 940.0, 990.0,
         1035.0),
-    3: (0.0, 139.8, 275.4, 406.8, 546.6, 694.9, 834.7, 974.6, 1122.9, 1262.7),
+    # Chapter 3 starts are anchored to exact WordBoundary events from audio
+    # asset 883, then converted to the edition's 1.18x playback timeline.
+    3: (0.0, 60.8719, 106.4798, 124.9120, 184.1734, 202.5893,
+        235.8764, 266.8168, 309.6864, 326.4563, 355.9298, 364.4452,
+        416.8816, 440.5290, 489.2714, 523.2919, 555.1531, 579.3056,
+        605.9353, 650.0764, 700.6795, 737.4542, 772.2081, 806.6388,
+        821.8035, 849.4436, 885.9250),
     4: (0.0, 40.0, 85.6, 120.0, 155.2, 220.0, 260.0, 296.4, 332.7,
         380.0, 402.7, 420.5, 453.0, 496.2, 519.1, 552.0, 575.0, 610.0,
         632.9, 650.8, 700.0, 736.8, 774.0, 806.0, 822.0),
@@ -56,11 +62,24 @@ def relative_image_path(chapter_index: int, frame_index: int) -> str:
     )
 
 
+def format_timecode(seconds: float) -> str:
+    total_milliseconds = max(0, round(float(seconds) * 1000))
+    hours, remainder = divmod(total_milliseconds, 3_600_000)
+    minutes, remainder = divmod(remainder, 60_000)
+    whole_seconds, milliseconds = divmod(remainder, 1000)
+    return f"{hours:02d}:{minutes:02d}:{whole_seconds:02d}.{milliseconds:03d}"
+
+
 def build() -> dict:
     repository = ProjectRepository()
     repository.initialize()
     project = repository.get_project(PROJECT_UUID, include_details=True)
-    if tuple(chapter["id"] for chapter in project["chapters"][:len(CHAPTER_IDS)]) != CHAPTER_IDS:
+    mapped_chapter_ids = tuple(
+        int(chapter["id"])
+        for chapter in project["chapters"]
+        if int(chapter["id"]) in CHAPTER_IDS
+    )
+    if mapped_chapter_ids != CHAPTER_IDS:
         raise RuntimeError("Comic Edition chapter mapping changed; refusing to edit another project")
 
     edition = repository.get_video_edition(PROJECT_UUID, EDITION_ID)
@@ -69,13 +88,42 @@ def build() -> dict:
     master_timings = {
         int(chapter["chapter_id"]): chapter for chapter in master["chapters"]
     }
-    chapters_by_database_id = {
-        int(chapter.get("chapterId")): chapter for chapter in settings["chapters"]
-    }
     book_chapters = {int(chapter["id"]): chapter for chapter in project["chapters"]}
+    settings_chapters = settings.setdefault("chapters", [])
+    existing_chapter_ids = {
+        int(chapter.get("chapterId") or 0) for chapter in settings_chapters
+    }
+    for chapter_id in CHAPTER_IDS:
+        if chapter_id in existing_chapter_ids:
+            continue
+        source = book_chapters[chapter_id]
+        settings_chapters.append({
+            "id": f"chapter-{chapter_id}",
+            "chapterId": chapter_id,
+            "title": source["title"],
+            "text": source["content"],
+            "isZero": bool(source.get("is_zero")),
+            "source": "editor",
+            "sourceContentHash": source["content_hash"],
+            "imageAssetId": None,
+            "audioAssetId": None,
+            "visualInserts": [],
+        })
+    project_positions = {
+        int(chapter["id"]): int(chapter["position"])
+        for chapter in project["chapters"]
+    }
+    settings_chapters.sort(
+        key=lambda chapter: project_positions.get(
+            int(chapter.get("chapterId") or 0), 1_000_000
+        )
+    )
+    chapters_by_database_id = {
+        int(chapter.get("chapterId")): chapter for chapter in settings_chapters
+    }
 
     timeline_cursor = 0.0
-    for chapter in settings["chapters"]:
+    for chapter in settings_chapters:
         chapter_id = int(chapter.get("chapterId") or 0)
         timing = master_timings.get(chapter_id)
         source = book_chapters.get(chapter_id)
@@ -95,6 +143,11 @@ def build() -> dict:
         chapter["sourceEndSeconds"] = source_end
         chapter["audioAssetId"] = f"chapter-audio-{timing['audio_asset_id']}"
         chapter["wordTimings"] = timing.get("word_timings", [])
+        chapter["start"] = format_timecode(chapter["start_seconds"])
+        chapter["end"] = format_timecode(chapter["end_seconds"])
+        chapter["duration_seconds"] = round(
+            chapter["end_seconds"] - chapter["start_seconds"], 3
+        )
 
     settings["materials"] = [
         item for item in settings.get("materials", [])

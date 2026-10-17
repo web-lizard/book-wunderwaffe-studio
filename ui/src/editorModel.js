@@ -150,30 +150,62 @@ export function canonicalTimelineWord(value) {
 export function applyExactWordTimings(words, exactTimings, start, end) {
   if (!Array.isArray(exactTimings) || !exactTimings.length) return words
   const timings = exactTimings
-    .map(timing => ({ text: String(timing?.text || ''), start: Number(timing?.start), end: Number(timing?.end) }))
+    .map(timing => ({
+      text: String(timing?.text || ''),
+      token: canonicalTimelineWord(timing?.text),
+      start: Number(timing?.start),
+      end: Number(timing?.end),
+    }))
     .filter(timing => Number.isFinite(timing.start) && Number.isFinite(timing.end) && timing.end >= timing.start)
     .sort((left, right) => left.start - right.start)
   if (!timings.length) return words
 
+  const sourceTokens = words
+    .map((word, position) => ({ position, token: canonicalTimelineWord(word.text), weight: word.weight }))
+    .filter(word => word.token)
+  const timingTokens = timings.filter(timing => timing.token)
   const anchors = new Map()
+  let sourceIndex = 0
   let timingIndex = 0
-  for (const word of words) {
-    const source = canonicalTimelineWord(word.text)
-    if (!source) continue
-    while (timingIndex < timings.length && !canonicalTimelineWord(timings[timingIndex].text)) timingIndex += 1
-    let combined = ''
-    let matchEnd = timingIndex - 1
-    for (let lookahead = timingIndex; lookahead < Math.min(timings.length, timingIndex + 5); lookahead += 1) {
-      combined += canonicalTimelineWord(timings[lookahead].text)
-      if (combined === source) { matchEnd = lookahead; break }
-      if (!source.startsWith(combined)) break
+  while (sourceIndex < sourceTokens.length && timingIndex < timingTokens.length) {
+    let best = null
+    for (let timingSkip = 0; timingSkip <= 8 && timingIndex + timingSkip < timingTokens.length; timingSkip += 1) {
+      const timingStart = timingIndex + timingSkip
+      let sourceText = ''
+      for (let sourceCount = 1; sourceCount <= 4 && sourceIndex + sourceCount <= sourceTokens.length; sourceCount += 1) {
+        sourceText += sourceTokens[sourceIndex + sourceCount - 1].token
+        let timingText = ''
+        for (let timingCount = 1; timingCount <= 4 && timingStart + timingCount <= timingTokens.length; timingCount += 1) {
+          timingText += timingTokens[timingStart + timingCount - 1].token
+          if (sourceText === timingText) {
+            const score = timingSkip * 100 + sourceCount + timingCount + Math.abs(sourceCount - timingCount)
+            if (!best || score < best.score) best = { timingStart, timingSkip, sourceCount, timingCount, score }
+          }
+          if (!sourceText.startsWith(timingText) && !timingText.startsWith(sourceText)) break
+        }
+      }
+      if (best?.timingSkip === 0 && best.sourceCount === 1 && best.timingCount === 1) break
     }
-    if (matchEnd < timingIndex) continue
-    anchors.set(word.index, {
-      start: Math.max(start, Math.min(end, timings[timingIndex].start)),
-      end: Math.max(start, Math.min(end, timings[matchEnd].end)),
-    })
-    timingIndex = matchEnd + 1
+    if (!best) {
+      sourceIndex += 1
+      continue
+    }
+
+    const firstTiming = timingTokens[best.timingStart]
+    const lastTiming = timingTokens[best.timingStart + best.timingCount - 1]
+    const aligned = sourceTokens.slice(sourceIndex, sourceIndex + best.sourceCount)
+    const alignedStart = Math.max(start, Math.min(end, firstTiming.start))
+    const alignedEnd = Math.max(alignedStart, Math.min(end, lastTiming.end))
+    const totalWeight = aligned.reduce((sum, word) => sum + word.weight, 0) || aligned.length
+    let elapsedWeight = 0
+    for (const word of aligned) {
+      const wordStart = alignedStart + elapsedWeight / totalWeight * (alignedEnd - alignedStart)
+      elapsedWeight += word.weight
+      const wordEnd = alignedStart + elapsedWeight / totalWeight * (alignedEnd - alignedStart)
+      anchors.set(word.position, { start: wordStart, end: Math.max(wordStart, wordEnd) })
+    }
+    sourceIndex += best.sourceCount
+    timingIndex = best.timingStart + best.timingCount
   }
   if (!anchors.size) return words
 
@@ -202,6 +234,12 @@ export function applyExactWordTimings(words, exactTimings, start, end) {
     }
   }
   return result
+}
+
+export function wordTimingCoverage(words) {
+  const spoken = (words || []).filter(word => canonicalTimelineWord(word?.text))
+  if (!spoken.length) return 0
+  return spoken.filter(word => word.timing === 'exact').length / spoken.length
 }
 
 export function timedTextWords(value, startValue, endValue, exactTimings = []) {
@@ -286,7 +324,7 @@ export function chapterTimelineWords(chapter) {
   return timedTextWords(chapter.text, chapter.start_seconds, chapter.end_seconds, chapterTimelineWordTimings(chapter))
 }
 
-export function wordAtTime(words, timeValue) {
+export function wordAtTime(words, timeValue, { activeOnly = false, tolerance = 0.04 } = {}) {
   if (!words.length) return null
   const time = Number(timeValue) || 0
   let low = 0
@@ -296,6 +334,7 @@ export function wordAtTime(words, timeValue) {
     const middle = Math.floor((low + high) / 2)
     if (words[middle].start <= time) { result = words[middle]; low = middle + 1 } else high = middle - 1
   }
+  if (activeOnly && (time + tolerance < result.start || time - tolerance > result.end)) return null
   return result
 }
 

@@ -15,6 +15,7 @@ import {
   parseTimecode,
   timedTextWords,
   wordAtTime,
+  wordTimingCoverage,
   wordsByParagraph,
 } from '../src/editorModel.js'
 
@@ -101,6 +102,39 @@ test('word timing merges exact tokenizer fragments and binary lookup follows pla
   assert.equal(words[0].start, 10.5)
   assert.equal(words[0].end, 11.4)
   assert.equal(wordAtTime(words, 12.1).text, 'снова')
+})
+
+test('exact timing alignment handles grouped provider tokens and recovers after extras', () => {
+  const grouped = timedTextWords('11 МИНУТ. Потом', 0, 5, [
+    { text: '11 МИНУТ', start: 0.4, end: 1.4 },
+    { text: 'Потом', start: 2, end: 2.5 },
+  ])
+  assert.equal(grouped[0].timing, 'exact')
+  assert.equal(grouped[1].timing, 'exact')
+  assert.equal(grouped[0].start, 0.4)
+  assert.equal(grouped[1].end, 1.4)
+  assert.equal(grouped[2].start, 2)
+  assert.equal(wordTimingCoverage(grouped), 1)
+
+  const recovered = timedTextWords('Первое второе третье', 0, 5, [
+    { text: 'Первое', start: 0.1, end: 0.5 },
+    { text: 'служебная-вставка', start: 0.5, end: 0.8 },
+    { text: 'второе', start: 1, end: 1.4 },
+    { text: 'третье', start: 2, end: 2.4 },
+  ])
+  assert.equal(wordTimingCoverage(recovered), 1)
+  assert.equal(recovered[1].start, 1)
+  assert.equal(recovered[2].end, 2.4)
+})
+
+test('active-only word lookup clears the highlight during real timing gaps', () => {
+  const words = timedTextWords('первое второе', 0, 4, [
+    { text: 'первое', start: 0.5, end: 1 },
+    { text: 'второе', start: 2, end: 2.5 },
+  ])
+  assert.equal(wordAtTime(words, 0.75, { activeOnly: true })?.text, 'первое')
+  assert.equal(wordAtTime(words, 1.5, { activeOnly: true }), null)
+  assert.equal(wordAtTime(words, 2.25, { activeOnly: true })?.text, 'второе')
 })
 
 test('time and material helpers accept editor-facing formats', () => {
